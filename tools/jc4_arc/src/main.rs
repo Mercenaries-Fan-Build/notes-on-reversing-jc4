@@ -167,6 +167,20 @@ fn cmd_bundle(path: &str) {
     }
 }
 
+// List a SARC's members (a model's / entity's grouped files, with real paths).
+fn cmd_sarc(path: &str) {
+    let b = std::fs::read(path).unwrap();
+    match jc4_formats::sarc::parse(&b) {
+        Ok(members) => {
+            println!("# SARC: {} member(s), {} bytes", members.len(), b.len());
+            for m in &members {
+                println!("  {:>10} B  {:>5}  {}", m.size, magic_ext(m.data(&b)), m.name);
+            }
+        }
+        Err(e) => eprintln!("{e}: {path}"),
+    }
+}
+
 fn cmd_hex(tab: &str, n: usize) {
     let b = std::fs::read(tab).unwrap();
     let region = &b[0..n.min(b.len())];
@@ -188,6 +202,7 @@ fn main() {
         eprintln!("  jc4_arc hash   <string>                         lookup3 hashlittle(0) name hash");
         eprintln!("  jc4_arc names  <tab> <filelist>                 un-hash entries via a filelist");
         eprintln!("  jc4_arc bundle <resourcebundle>                 list members + summarize a structure");
+        eprintln!("  jc4_arc sarc   <sarc/.ee/model>                 list a SARC's grouped member files");
         eprintln!("  jc4_arc extract <tab> <arc> <outdir> [limit]    decode payloads (raw/zlib/Oodle)");
         return;
     }
@@ -198,6 +213,7 @@ fn main() {
         "hex" => cmd_hex(&a[2], a.get(3).and_then(|s| s.parse().ok()).unwrap_or(256)),
         "hash" => println!("{:08x}  {:?}", hashlittle(a[2].as_bytes(), 0), a[2]),
         "bundle" => cmd_bundle(&a[2]),
+        "sarc" => cmd_sarc(&a[2]),
         "names" => {
             if a.len() < 4 { eprintln!("usage: jc4_arc names <tab> <filelist>"); return; }
             cmd_names(&a[2], &a[3]);
