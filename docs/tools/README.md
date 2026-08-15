@@ -12,8 +12,8 @@ pattern. Every format claim ships with a passing oracle.
 | extract + decompress arc payloads (raw/Oodle) | [`jc4_arc`](../../tools/jc4_arc) `extract` | ✅ 0 failures on 4477 entries; runtime-binds `oo2core_7_win64.dll` |
 | un-hash entries via a filelist | [`jc4_arc`](../../tools/jc4_arc) `names` | ✅ `hash` + `names` (lookup3 hashlittle) |
 | decode ADF structured data → JSON | [`jc4_adf`](../../tools/jc4_adf) | ✅ `info`/`dump`/`verify` — 90/90 corpus decode |
-| inspect a textured model | *(planned)* `jc4_workshop` | wgpu+egui viewer; needs AVTX + RBM/RBN |
-| AVTX texture → RGBA/DDS | *(planned, next)* in `jc4_formats` | first render target |
+| AVTX texture → DDS / render bytes | [`jc4_tex`](../../tools/jc4_tex) + `jc4_formats::avtx` | ✅ `info`/`dds`/`verify` — 1193/1193 |
+| inspect a textured model | *(planned, next)* `jc4_workshop` | wgpu+egui viewer; AVTX ready, needs RBM/RBN |
 | RBM/RBN model → mesh | *(planned)* in `jc4_formats` | fork pattern from `jc2_rbm` |
 | write an additive override pack | *(planned)* | after the override-mount layer is reversed |
 
