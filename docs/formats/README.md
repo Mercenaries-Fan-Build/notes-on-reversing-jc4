@@ -9,6 +9,7 @@ Crack order and status track [`../binary_recon.md`](../binary_recon.md).
 | Oodle | arc payload compression (`oo2core_7_win64.dll`) | ✅ integrated in `jc4_arc extract` |
 | name hash | 32-bit string hash (TAB paths + ADF names) | ✅ **PROVEN** — [`name_hash.md`](name_hash.md); lookup3 `hashlittle(0)`, 12130+225 pairs |
 | ADF | Avalanche Data Format — structured data | ✅ **PROVEN** — [`adf.md`](adf.md); `jc4_adf` decodes 90/90 to JSON |
+| AVTX | Avalanche texture (BCn/DXGI) | ✅ **PROVEN** — [`avtx.md`](avtx.md); `jc4_tex` verify 1193/1193, DDS export |
 | AAF / SARC | container nesting | to confirm |
 | RBM / RBN | RenderBlockModel meshes → glTF | to crack (JC2 `rbm` is the ancestor pattern) |
 | DDSC / HMDDSC | streamed-mip textures → DDS | to crack |
