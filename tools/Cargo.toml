@@ -1,7 +1,7 @@
 # JC4 tooling workspace. Shared codec lib (jc4_formats) + thin CLIs + (soon) jc4_workshop.
 [workspace]
 resolver = "2"
-members = ["jc4_formats", "jc4_arc", "jc4_adf"]
+members = ["jc4_formats", "jc4_arc", "jc4_adf", "jc4_tex"]
 
 [profile.release]
 opt-level = 3
