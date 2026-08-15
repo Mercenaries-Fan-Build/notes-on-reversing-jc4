@@ -35,9 +35,9 @@ the JC4 binary/assets before you rely on it.
 
 | Thing | JC2 | JC4 | Impact |
 |---|---|---|---|
-| **TAB version** | v1: 16-byte header, 12-byte entries `{nameHash,offset,size}`, 2048-align | **v2**: magic `TAB\0`, version `2.1`, alignment `0x1000`. Entry stride does NOT match JC2's 12 bytes (interleaved `0xFFFFFFFF` fields observed) | ✅ header **proven**; ⚠️ entry layout **UNVERIFIED** — first crack target (`tools/jc4_arc`) |
+| **TAB version** | v1: 16-byte header, 12-byte entries `{nameHash,offset,size}`, 2048-align | **v2**: 24-byte header + block table + **20-byte entries** `{hash,offset,csize,usize,flags}`. The `0xFFFFFFFF` fields are block-table sentinels, not entries. | ✅ **PROVEN** (double-blind, all 159 tabs) — see [`formats/tab_arc_v2.md`](formats/tab_arc_v2.md) |
 | **Compression** | zlib/deflate (per-file `0x78` streams) | **Oodle Kraken** (`oo2core_7_win64.dll` shipped) | New. Link the game's own DLL (can't redistribute); `flate2` won't decode arc payloads |
-| **Structured data** | Avalanche property container `01 04 00 01` | **ADF** (Avalanche Data Format, magic `ADF ` / ` FDA` LE) — first entry of `boot/game0.arc` is `AICoverSettings.adf` | ✅ presence **proven**; format to crack |
+| **Structured data** | Avalanche property container `01 04 00 01` | **ADF** (Avalanche Data Format, magic ` FDA` LE) — reflection-based typed container, the backbone format | ✅ **PROVEN** (double-blind, 90/90 decode) — see [`formats/adf.md`](formats/adf.md) |
 | **Container** | SARC | **AAF** and/or SARC nesting inside ADF/arc | ⚠️ inferred — confirm |
 | **Textures** | `DDS ` inline | **DDSC / HMDDSC** (streamed-mip Avalanche texture) | New; expect header + external hi-res mip stream |
 | **Audio** | FSB / FEV (FMOD) | **FMOD Studio** (`fmod_studio_F.dll`) — `.bank` | Newer FMOD; re-derive |
