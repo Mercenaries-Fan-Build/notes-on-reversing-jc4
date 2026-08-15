@@ -11,3 +11,4 @@ pub mod hash;
 pub mod oodle;
 pub mod tab;
 pub mod adf;
+pub mod avtx;
