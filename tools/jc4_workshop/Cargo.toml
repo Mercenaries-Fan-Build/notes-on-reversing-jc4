@@ -1,0 +1,17 @@
+[package]
+name = "jc4_workshop"
+version = "0.1.0"
+edition = "2021"
+description = "JC4 asset workshop — wgpu+egui browser & inspector for archives, textures (AVTX) and data (ADF). Model/texture RENDER viewport is stubbed pending the render pass."
+
+[[bin]]
+name = "jc4_workshop"
+path = "src/main.rs"
+
+[dependencies]
+jc4_formats = { path = "../jc4_formats" }
+# wgpu backend now so the 3D model/texture render pass can slot in later without a backend swap.
+eframe = { version = "0.29", default-features = false, features = ["wgpu", "default_fonts"] }
+egui = "0.29"
+rfd = "0.15"          # native open-file dialogs
+serde_json = "1"      # pretty-print decoded ADF
