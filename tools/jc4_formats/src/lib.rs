@@ -13,3 +13,4 @@ pub mod tab;
 pub mod adf;
 pub mod avtx;
 pub mod bundle;
+pub mod sarc;
