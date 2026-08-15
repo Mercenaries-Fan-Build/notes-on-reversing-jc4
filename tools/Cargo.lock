@@ -64,6 +64,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "jc4_tex"
+version = "0.1.0"
+dependencies = [
+ "jc4_formats",
+]
+
+[[package]]
 name = "libloading"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
