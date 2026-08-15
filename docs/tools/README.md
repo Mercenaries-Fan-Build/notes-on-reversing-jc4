@@ -1,16 +1,21 @@
 # Tools — task index
 
-"I want to…" → which tool. Every tool is a small Rust crate under [`../../tools/`](../../tools),
-validated by round-trip byte-equality.
+A small cargo **workspace** under [`../../tools/`](../../tools): the shared codec library
+[`jc4_formats`](../../tools/jc4_formats) (TAB/ARC+Oodle, ADF, name hash) plus thin CLIs over it — and
+(soon) `jc4_workshop`, the wgpu+egui model/texture inspector. Mirrors the `mercs2_formats`/`sab_formats`
+pattern. Every format claim ships with a passing oracle.
 
 | I want to… | Tool | Status |
 |---|---|---|
+| the shared format library | [`jc4_formats`](../../tools/jc4_formats) | ✅ `tab` / `adf` / `hash` / `oodle` modules |
 | list / verify a `.tab`+`.arc` archive | [`jc4_arc`](../../tools/jc4_arc) | ✅ `header`/`verify`/`list`/`hex` — TAB v2 proven on all 159 tabs |
 | extract + decompress arc payloads (raw/Oodle) | [`jc4_arc`](../../tools/jc4_arc) `extract` | ✅ 0 failures on 4477 entries; runtime-binds `oo2core_7_win64.dll` |
+| un-hash entries via a filelist | [`jc4_arc`](../../tools/jc4_arc) `names` | ✅ `hash` + `names` (lookup3 hashlittle) |
 | decode ADF structured data → JSON | [`jc4_adf`](../../tools/jc4_adf) | ✅ `info`/`dump`/`verify` — 90/90 corpus decode |
-| RBM/RBN model → glTF | *(planned)* `jc4_rbm` | fork from Mercs 2 repo's `tools/jc2/jc2_rbm` |
-| DDSC texture ⇄ DDS | *(planned)* `jc4_dtex` | — |
-| write an additive override pack | *(planned)* | after the mount/override layer is reversed |
+| inspect a textured model | *(planned)* `jc4_workshop` | wgpu+egui viewer; needs AVTX + RBM/RBN |
+| AVTX texture → RGBA/DDS | *(planned, next)* in `jc4_formats` | first render target |
+| RBM/RBN model → mesh | *(planned)* in `jc4_formats` | fork pattern from `jc2_rbm` |
+| write an additive override pack | *(planned)* | after the override-mount layer is reversed |
 
 ## Prior-art crates to fork (in the Mercs 2 repo)
 
@@ -21,6 +26,7 @@ validated by round-trip byte-equality.
 
 ## Conventions
 
-Build: `cargo build --release --manifest-path tools/<crate>/Cargo.toml`. Keep crates dependency-light
-(hand-rolled byte readers; `flate2` for zlib; the game's `oo2core_7_win64.dll` for Oodle). No format
-claim ships without a passing round-trip / consumes-file / alignment oracle.
+Build the whole workspace: `cargo build --release` from `tools/` (binaries land in `tools/target/release/`).
+`cargo test` runs the unit oracles (e.g. the hashlittle known-pairs test). Keep it dependency-light
+(hand-rolled byte readers; `flate2` for zlib; the game's `oo2core_7_win64.dll` for Oodle; `serde_json`
+for ADF output). No format claim ships without a passing round-trip / consumes-file / alignment oracle.
