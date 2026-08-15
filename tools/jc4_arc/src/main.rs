@@ -172,9 +172,14 @@ fn cmd_sarc(path: &str) {
     let b = std::fs::read(path).unwrap();
     match jc4_formats::sarc::parse(&b) {
         Ok(members) => {
-            println!("# SARC: {} member(s), {} bytes", members.len(), b.len());
+            let stored = members.iter().filter(|m| m.stored).count();
+            println!("# SARC: {} member(s) — {} stored, {} external ref(s), {} bytes",
+                members.len(), stored, members.len() - stored, b.len());
             for m in &members {
-                println!("  {:>10} B  {:>5}  {}", m.size, magic_ext(m.data(&b)), m.name);
+                match m.data(&b) {
+                    Some(d) => println!("  {:>10} B  {:>5}  {}", m.size, magic_ext(d), m.name),
+                    None => println!("  {:>10} B    ref  → {}", m.size, m.name),
+                }
             }
         }
         Err(e) => eprintln!("{e}: {path}"),
