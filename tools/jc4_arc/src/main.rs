@@ -133,6 +133,40 @@ fn cmd_names(tab: &str, filelist: &str) {
     }
 }
 
+// Read a resourcebundle (world-node/structure root): list members, and for ADF members summarize the
+// composition — the root instance's fields with array counts (e.g. SBreakableCollection's
+// model_instances / breakable_instances / effect_instances / navmesh_cutters). This IS the Structure
+// inspector's data layer; it needs no new crack beyond ADF (already proven).
+fn cmd_bundle(path: &str) {
+    let b = std::fs::read(path).unwrap();
+    let members = jc4_formats::bundle::parse(&b);
+    println!("# resourcebundle: {} member(s), {} bytes", members.len(), b.len());
+    for (i, m) in members.iter().enumerate() {
+        let data = m.data(&b);
+        let ext = magic_ext(data);
+        println!("[{i}] name {:08x}  type {:08x}  {:>9} B  {}", m.name_hash, m.type_hash, m.size, ext);
+        if ext != "adf" { continue; }
+        let adf = match jc4_formats::adf::parse(data.to_vec()) { Ok(a) => a, Err(_) => continue };
+        let v = adf.decode_instances();
+        if let Some(root) = v.as_object() {
+            for (name, val) in root {
+                let obj = match val.as_object() { Some(o) => o, None => continue };
+                println!("    {name}:  ({} fields)", obj.len());
+                for (k, fv) in obj {
+                    if let Some(arr) = fv.as_array() {
+                        println!("      {k}: [{} items]", arr.len());
+                    } else if let Some(o2) = fv.as_object() {
+                        println!("      {k}: {{{} fields}}", o2.len());
+                    } else {
+                        let s = fv.to_string();
+                        println!("      {k}: {}", if s.len() > 60 { &s[..60] } else { &s });
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn cmd_hex(tab: &str, n: usize) {
     let b = std::fs::read(tab).unwrap();
     let region = &b[0..n.min(b.len())];
@@ -153,6 +187,7 @@ fn main() {
         eprintln!("  jc4_arc hex    <tab> [nbytes]                   hexdump raw bytes");
         eprintln!("  jc4_arc hash   <string>                         lookup3 hashlittle(0) name hash");
         eprintln!("  jc4_arc names  <tab> <filelist>                 un-hash entries via a filelist");
+        eprintln!("  jc4_arc bundle <resourcebundle>                 list members + summarize a structure");
         eprintln!("  jc4_arc extract <tab> <arc> <outdir> [limit]    decode payloads (raw/zlib/Oodle)");
         return;
     }
@@ -162,6 +197,7 @@ fn main() {
         "list" => cmd_list(&a[2], a.get(3).and_then(|s| s.parse().ok()).unwrap_or(32)),
         "hex" => cmd_hex(&a[2], a.get(3).and_then(|s| s.parse().ok()).unwrap_or(256)),
         "hash" => println!("{:08x}  {:?}", hashlittle(a[2].as_bytes(), 0), a[2]),
+        "bundle" => cmd_bundle(&a[2]),
         "names" => {
             if a.len() < 4 { eprintln!("usage: jc4_arc names <tab> <filelist>"); return; }
             cmd_names(&a[2], &a[3]);
