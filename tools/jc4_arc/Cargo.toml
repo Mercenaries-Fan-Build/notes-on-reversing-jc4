@@ -1,0 +1,15 @@
+[package]
+name = "jc4_arc"
+version = "0.1.0"
+edition = "2021"
+description = "Just Cause 4 Avalanche TAB/ARC v2 reader — WIP (header proven, entry table under crack)"
+
+[[bin]]
+name = "jc4_arc"
+path = "src/main.rs"
+
+[dependencies]
+flate2 = "1"    # zlib fallback; JC4 arc payloads are Oodle (oo2core_7_win64.dll) — binding TBD
+
+[profile.release]
+opt-level = 3

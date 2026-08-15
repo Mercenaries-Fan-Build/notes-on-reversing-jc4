@@ -1,0 +1,34 @@
+# Game assets & binaries — never commit (huge, copyrighted)
+*.arc
+*.tab
+*.adf
+*.rbm
+*.rbn
+*.ddsc
+*.hmddsc
+*.bank
+*.dll
+*.exe
+game-files/
+extracted/
+output/
+
+# Ghidra decomp & project (regenerable; corpus-indexed, not committed)
+*_decomp.txt
+_ghidra_*/
+*.gpr
+*.rep/
+
+# corpus RAG index (repo-root-relative, regenerable)
+storage/
+tools/corpus_mcp/node_modules/
+tools/corpus_mcp/.env
+
+# Rust
+target/
+**/target/
+
+# scratch
+*.tmp
+scratch*/
+.DS_Store
