@@ -60,19 +60,44 @@ fn cmd_list(tab: &str, limit: usize) {
     }
 }
 
-fn cmd_extract(tab_path: &str, arc_path: &str, outdir: &str, limit: usize, dll: &str) {
+fn load_filelist_map(path: &str) -> HashMap<u32, String> {
+    let mut m = HashMap::new();
+    if let Ok(txt) = std::fs::read_to_string(path) {
+        for line in txt.lines() {
+            let p = line.trim();
+            if p.is_empty() || p.starts_with(';') { continue; }
+            m.insert(hashlittle(p.as_bytes(), 0), p.to_string());
+        }
+    }
+    m
+}
+
+// Extract payloads. With `names`/`match_sub`, only entries whose resolved path contains `match_sub`
+// are decoded, and outputs are named by their real path (basename) instead of the hash — so
+// `--filelist F --match .resourcebundle` (or `--match /models/`) pulls exactly a composite asset set.
+fn cmd_extract(tab_path: &str, arc_path: &str, outdir: &str, limit: usize, dll: &str,
+               names: Option<&HashMap<u32, String>>, match_sub: Option<&str>) {
     let b = std::fs::read(tab_path).unwrap();
     let t = match parse_tab(&b) { Ok(t) => t, Err(e) => { eprintln!("{e}"); return; } };
     let mut arc = File::open(arc_path).unwrap();
     std::fs::create_dir_all(outdir).unwrap();
     let mut oodle: Option<Oodle> = None;
     let (mut ok, mut fail) = (0u32, 0u32);
-    for e in t.entries.iter().take(limit) {
+    let sub = match_sub.map(|s| s.to_lowercase());
+    for e in t.entries.iter() {
+        if ok as usize >= limit { break; }
+        let path = names.and_then(|m| m.get(&e.name_hash));
+        if let Some(s) = &sub {
+            match path { Some(p) if p.to_lowercase().contains(s.as_str()) => {}, _ => continue }
+        }
         match decode_entry(&mut arc, &t, e, dll, &mut oodle) {
             Ok(data) => {
-                let path = format!("{outdir}/{:08x}.{}", e.name_hash, magic_ext(&data));
-                if let Err(x) = File::create(&path).and_then(|mut f| f.write_all(&data)) {
-                    eprintln!("write {path}: {x}"); fail += 1;
+                let out = match path {
+                    Some(p) => format!("{outdir}/{}", p.rsplit(['/', '\\']).next().unwrap_or(p)),
+                    None => format!("{outdir}/{:08x}.{}", e.name_hash, magic_ext(&data)),
+                };
+                if let Err(x) = File::create(&out).and_then(|mut f| f.write_all(&data)) {
+                    eprintln!("write {out}: {x}"); fail += 1;
                 } else { ok += 1; }
             }
             Err(x) => { eprintln!("entry {:08x} (codec {}): {x}", e.name_hash, e.codec()); fail += 1; }
@@ -142,9 +167,14 @@ fn main() {
             cmd_names(&a[2], &a[3]);
         }
         "extract" => {
-            if a.len() < 5 { eprintln!("usage: jc4_arc extract <tab> <arc> <outdir> [limit]"); return; }
-            let limit = a.get(5).and_then(|s| s.parse().ok()).unwrap_or(usize::MAX);
-            cmd_extract(&a[2], &a[3], &a[4], limit, &default_oodle_dll());
+            if a.len() < 5 {
+                eprintln!("usage: jc4_arc extract <tab> <arc> <outdir> [limit] [--filelist F --match SUB]");
+                return;
+            }
+            let limit = a.get(5).filter(|s| !s.starts_with("--")).and_then(|s| s.parse().ok()).unwrap_or(usize::MAX);
+            let fl = a.iter().position(|s| s == "--filelist").and_then(|i| a.get(i + 1)).map(|p| load_filelist_map(p));
+            let msub = a.iter().position(|s| s == "--match").and_then(|i| a.get(i + 1)).cloned();
+            cmd_extract(&a[2], &a[3], &a[4], limit, &default_oodle_dll(), fl.as_ref(), msub.as_deref());
         }
         other => eprintln!("unknown command {other}"),
     }
