@@ -5,9 +5,9 @@ validated by round-trip byte-equality.
 
 | I want to… | Tool | Status |
 |---|---|---|
-| list / probe a `.tab`+`.arc` archive | [`jc4_arc`](../../tools/jc4_arc) | WIP — TAB v2 header parse + entry-stride cracking probe |
-| decompress an arc entry (Oodle) | `jc4_arc` (planned) | needs `oo2core_7_win64.dll` binding |
-| decode ADF structured data | *(planned)* `jc4_adf` | — |
+| list / verify a `.tab`+`.arc` archive | [`jc4_arc`](../../tools/jc4_arc) | ✅ `header`/`verify`/`list`/`hex` — TAB v2 proven on all 159 tabs |
+| extract + decompress arc payloads (raw/Oodle) | [`jc4_arc`](../../tools/jc4_arc) `extract` | ✅ 0 failures on 4477 entries; runtime-binds `oo2core_7_win64.dll` |
+| decode ADF structured data → JSON | [`jc4_adf`](../../tools/jc4_adf) | ✅ `info`/`dump`/`verify` — 90/90 corpus decode |
 | RBM/RBN model → glTF | *(planned)* `jc4_rbm` | fork from Mercs 2 repo's `tools/jc2/jc2_rbm` |
 | DDSC texture ⇄ DDS | *(planned)* `jc4_dtex` | — |
 | write an additive override pack | *(planned)* | after the mount/override layer is reversed |
