@@ -9,7 +9,8 @@ name = "jc4_arc"
 path = "src/main.rs"
 
 [dependencies]
-flate2 = "1"    # zlib fallback; JC4 arc payloads are Oodle (oo2core_7_win64.dll) — binding TBD
+flate2 = "1"         # codec 1 (zlib) fallback
+libloading = "0.8"   # runtime-load the game's oo2core_7_win64.dll for codec 4 (Oodle)
 
 [profile.release]
 opt-level = 3
