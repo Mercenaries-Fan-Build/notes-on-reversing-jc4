@@ -1,0 +1,12 @@
+[package]
+name = "jc4_tex"
+version = "0.1.0"
+edition = "2021"
+description = "JC4 AVTX texture CLI (info/dds/verify) over jc4_formats."
+
+[[bin]]
+name = "jc4_tex"
+path = "src/main.rs"
+
+[dependencies]
+jc4_formats = { path = "../jc4_formats" }
