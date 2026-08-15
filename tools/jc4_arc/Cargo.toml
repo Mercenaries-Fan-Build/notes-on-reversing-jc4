@@ -2,15 +2,11 @@
 name = "jc4_arc"
 version = "0.1.0"
 edition = "2021"
-description = "Just Cause 4 Avalanche TAB/ARC v2 reader — WIP (header proven, entry table under crack)"
+description = "JC4 TAB/ARC v2 CLI (header/verify/list/extract/hash/names) over jc4_formats."
 
 [[bin]]
 name = "jc4_arc"
 path = "src/main.rs"
 
 [dependencies]
-flate2 = "1"         # codec 1 (zlib) fallback
-libloading = "0.8"   # runtime-load the game's oo2core_7_win64.dll for codec 4 (Oodle)
-
-[profile.release]
-opt-level = 3
+jc4_formats = { path = "../jc4_formats" }
