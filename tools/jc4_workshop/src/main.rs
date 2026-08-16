@@ -65,7 +65,8 @@ fn main() -> eframe::Result<()> {
     eframe::run_native("jc4_workshop", opts, Box::new(|cc| {
         install_theme(&cc.egui_ctx);
         let mut app = Workshop::default();
-        app.oodle_dll = tab::default_oodle_dll();
+        app.config = load_config();
+        app.apply_config();
         Ok(Box::new(app))
     }))
 }
@@ -118,9 +119,62 @@ struct Archive { tab_path: PathBuf, arc_path: PathBuf, tab: tab::Tab }
 #[derive(Default, PartialEq, Clone, Copy)]
 enum Page { #[default] Inspect, Settings }
 
+#[derive(Default, Clone)]
+struct Config { game_dir: String, oodle_dll: String, filelist: String }
+
+/// Config lives in a text file (no hardcoded paths in the binary). Windows: `%APPDATA%\jc4_workshop\config.txt`.
+fn config_path() -> PathBuf {
+    let base = std::env::var_os("APPDATA").map(PathBuf::from)
+        .or_else(|| std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from))
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+        .unwrap_or_else(|| PathBuf::from("."));
+    base.join("jc4_workshop").join("config.txt")
+}
+fn load_config() -> Config {
+    let mut c = Config::default();
+    if let Ok(s) = std::fs::read_to_string(config_path()) {
+        for line in s.lines() {
+            if let Some((k, v)) = line.split_once('=') {
+                let v = v.trim().to_string();
+                match k.trim() { "game_dir" => c.game_dir = v, "oodle_dll" => c.oodle_dll = v, "filelist" => c.filelist = v, _ => {} }
+            }
+        }
+    }
+    c
+}
+fn save_config(c: &Config) {
+    let p = config_path();
+    if let Some(d) = p.parent() { let _ = std::fs::create_dir_all(d); }
+    let _ = std::fs::write(&p, format!("game_dir = {}\noodle_dll = {}\nfilelist = {}\n", c.game_dir, c.oodle_dll, c.filelist));
+}
+/// Discover the game's `.tab` archives under `<game_dir>/archives_win64`, labelled by relative path.
+fn discover_archives(game_dir: &str) -> Vec<(String, PathBuf)> {
+    let root = Path::new(game_dir).join("archives_win64");
+    let mut out = Vec::new();
+    let mut stack = vec![root.clone()];
+    while let Some(dir) = stack.pop() {
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.is_dir() { stack.push(p); }
+                else if p.extension().map_or(false, |x| x == "tab") {
+                    let label = p.strip_prefix(&root).ok()
+                        .and_then(|r| r.with_extension("").to_str().map(|s| s.replace('\\', "/")))
+                        .unwrap_or_else(|| name_of(&p));
+                    out.push((label, p));
+                }
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
 #[derive(Default)]
 struct Workshop {
     page: Page,
+    config: Config,
+    archives: Vec<(String, PathBuf)>, // (label, .tab path) discovered under the game dir
     archive: Option<Archive>,
     names: BTreeMap<u32, String>,
     filter: String,
@@ -156,6 +210,26 @@ impl Workshop {
             }
             self.status = format!("{} known names", self.names.len());
         }
+    }
+
+    // Apply the config: derive the Oodle DLL path, discover archives, load the filelist, auto-open a
+    // default archive. Called at startup and whenever a Settings path changes.
+    fn apply_config(&mut self) {
+        self.oodle_dll = if !self.config.oodle_dll.is_empty() { self.config.oodle_dll.clone() }
+            else if !self.config.game_dir.is_empty() { format!("{}/oo2core_7_win64.dll", self.config.game_dir) }
+            else { String::new() };
+        self.oodle = None;
+        self.names.clear();
+        if !self.config.filelist.is_empty() { self.load_filelist(PathBuf::from(self.config.filelist.clone())); }
+        self.archives = if self.config.game_dir.is_empty() { Vec::new() } else { discover_archives(&self.config.game_dir) };
+        self.archive = None; self.selected = None; self.preview = None;
+        if let Some((_, p)) = self.archives.iter().find(|(l, _)| l == "main/game0").cloned()
+            .or_else(|| self.archives.first().cloned()) { self.open_archive(p); }
+        self.status = if self.config.game_dir.is_empty() {
+            "Set the game folder in Settings to auto-load assets.".into()
+        } else {
+            format!("{} archives · {} names", self.archives.len(), self.names.len())
+        };
     }
 
     fn entry_kind(&self, e: &tab::Entry) -> Kind {
@@ -228,7 +302,7 @@ fn build_bundle(data: &[u8]) -> BundleView {
                 let v = a.decode_instances();
                 if let Some(root) = v.as_object() {
                     for (name, val) in root {
-                        fields.push((format!("‹{name}›"), String::new()));
+                        fields.push((name.clone(), String::new()));
                         if let Some(o) = val.as_object() {
                             for (k, fv) in o {
                                 let s = if let Some(arr) = fv.as_array() { format!("[{}]", arr.len()) }
@@ -325,15 +399,50 @@ fn card(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
     ui.add_space(9.0);
 }
 
-fn rail_btn(ui: &mut egui::Ui, glyph: &str, label: &str, on: bool, soon: bool) -> bool {
+// Vector rail icons drawn with the painter (no font/emoji dependency → no tofu).
+fn draw_icon(p: &egui::Painter, c: egui::Pos2, s: f32, col: Color32, id: u8) {
+    use egui::pos2;
+    let st = Stroke::new(1.6, col);
+    let seg = |a: egui::Pos2, b: egui::Pos2| p.line_segment([a, b], st);
+    match id {
+        0 => { // inspect — magnifier
+            p.circle_stroke(pos2(c.x - s * 0.18, c.y - s * 0.18), s * 0.55, st);
+            seg(pos2(c.x + s * 0.22, c.y + s * 0.22), pos2(c.x + s * 0.72, c.y + s * 0.72));
+        }
+        1 => { // settings — sliders
+            for (i, ky) in [-0.55f32, 0.05, 0.65].iter().enumerate() {
+                let y = c.y + s * ky;
+                seg(pos2(c.x - s * 0.75, y), pos2(c.x + s * 0.75, y));
+                p.circle_filled(pos2(c.x + s * 0.45 * if i == 1 { -1.0 } else { 1.0 }, y), 2.4, col);
+            }
+        }
+        2 => { // models — isometric cube
+            let pts = vec![pos2(c.x, c.y - s), pos2(c.x + s * 0.87, c.y - s * 0.5),
+                pos2(c.x + s * 0.87, c.y + s * 0.5), pos2(c.x, c.y + s),
+                pos2(c.x - s * 0.87, c.y + s * 0.5), pos2(c.x - s * 0.87, c.y - s * 0.5)];
+            p.add(egui::Shape::closed_line(pts, st));
+            seg(c, pos2(c.x, c.y - s));
+            seg(c, pos2(c.x + s * 0.87, c.y + s * 0.5));
+            seg(c, pos2(c.x - s * 0.87, c.y + s * 0.5));
+        }
+        _ => { // pack — box with band
+            let r = egui::Rect::from_center_size(c, egui::vec2(s * 1.6, s * 1.7));
+            p.rect_stroke(r, 1.0, st);
+            let y = r.top() + r.height() * 0.34;
+            seg(pos2(r.left(), y), pos2(r.right(), y));
+            seg(pos2(c.x, r.top()), pos2(c.x, y));
+        }
+    }
+}
+
+fn rail_btn(ui: &mut egui::Ui, icon: u8, label: &str, on: bool, soon: bool) -> bool {
     let color = if on { ACC } else if soon { FAINT } else { DIM };
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 54.0),
         if soon { egui::Sense::hover() } else { egui::Sense::click() });
     if on { ui.painter().rect_filled(egui::Rect::from_min_size(rect.left_top(), egui::vec2(3.0, rect.height())), 0.0, ACC); }
     if resp.hovered() && !soon { ui.painter().rect_filled(rect, 0.0, Color32::from_white_alpha(4)); }
-    let p = ui.painter();
-    p.text(rect.center() - egui::vec2(0.0, 8.0), egui::Align2::CENTER_CENTER, glyph, egui::FontId::proportional(18.0), color);
-    p.text(rect.center() + egui::vec2(0.0, 13.0), egui::Align2::CENTER_CENTER, label, egui::FontId::proportional(8.5), color);
+    draw_icon(ui.painter(), rect.center() - egui::vec2(0.0, 7.0), 9.0, color, icon);
+    ui.painter().text(rect.center() + egui::vec2(0.0, 14.0), egui::Align2::CENTER_CENTER, label, egui::FontId::proportional(8.5), color);
     resp.clicked()
 }
 
@@ -378,11 +487,11 @@ impl eframe::App for Workshop {
         egui::SidePanel::left("rail").exact_width(62.0).resizable(false)
             .frame(egui::Frame::none().fill(G0)).show(ctx, |ui| {
                 ui.add_space(6.0);
-                if rail_btn(ui, "🔍", "INSPECT", self.page == Page::Inspect, false) { self.page = Page::Inspect; }
-                if rail_btn(ui, "⚙", "SETTINGS", self.page == Page::Settings, false) { self.page = Page::Settings; }
+                if rail_btn(ui, 0, "INSPECT", self.page == Page::Inspect, false) { self.page = Page::Inspect; }
+                if rail_btn(ui, 1, "SETTINGS", self.page == Page::Settings, false) { self.page = Page::Settings; }
                 ui.add_space(ui.available_height() - 108.0);
-                rail_btn(ui, "🧊", "MODELS", false, true);
-                rail_btn(ui, "📦", "PACK", false, true);
+                rail_btn(ui, 2, "MODELS", false, true);
+                rail_btn(ui, 3, "PACK", false, true);
             });
 
         match self.page {
@@ -394,10 +503,29 @@ impl eframe::App for Workshop {
 
 impl Workshop {
     fn ui_inspect(&mut self, ctx: &egui::Context) {
-        // navigator (archive browser)
+        let archives = self.archives.clone();
+        let cur_label = self.archive.as_ref()
+            .and_then(|a| archives.iter().find(|(_, p)| *p == a.tab_path).map(|(l, _)| l.clone()))
+            .unwrap_or_else(|| "—".to_string());
+        let mut switch: Option<PathBuf> = None;
         egui::SidePanel::left("nav").default_width(310.0).frame(egui::Frame::none().fill(G1).inner_margin(12.0))
             .show(ctx, |ui| {
                 ui.label(RichText::new("ARCHIVE").color(TX).size(15.0).strong());
+                ui.add_space(5.0);
+                if archives.is_empty() {
+                    ui.label(RichText::new("no game folder set — see Settings").color(FAINT).size(10.5));
+                } else {
+                    egui::ComboBox::from_id_salt("arch")
+                        .selected_text(RichText::new(&cur_label).monospace().size(12.0).color(ACC))
+                        .width(ui.available_width() - 4.0)
+                        .show_ui(ui, |ui| {
+                            for (label, path) in &archives {
+                                if ui.selectable_label(*label == cur_label, RichText::new(label).monospace().size(11.5)).clicked() {
+                                    switch = Some(path.clone());
+                                }
+                            }
+                        });
+                }
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("filter").color(FAINT).size(10.0));
@@ -406,7 +534,7 @@ impl Workshop {
                 ui.add_space(6.0);
                 let mut pick = None;
                 match &self.archive {
-                    None => { ui.add_space(12.0); ui.label(RichText::new("Open a .tab to browse.").color(FAINT)); }
+                    None => { ui.add_space(12.0); ui.label(RichText::new("No archive open — pick one above, or set the game folder in Settings.").color(FAINT)); }
                     Some(a) => {
                         let f = self.filter.to_lowercase();
                         let visible: Vec<usize> = a.tab.entries.iter().enumerate().filter(|(_, e)| {
@@ -436,6 +564,7 @@ impl Workshop {
                 }
                 if let Some(i) = pick { self.select(i); }
             });
+        if let Some(p) = switch { self.open_archive(p); }
 
         // inspector
         egui::SidePanel::right("insp").default_width(372.0).frame(egui::Frame::none().fill(G1).inner_margin(13.0))
@@ -469,7 +598,7 @@ impl Workshop {
                         }
                         for mat in &p.materials {
                             ui.add_space(4.0);
-                            ui.label(RichText::new(format!("▸ {}  [{}]", mat.name, mat.render_block)).size(12.0).color(VOLT));
+                            ui.label(RichText::new(format!("{}   [{}]", mat.name, mat.render_block)).size(12.0).color(VOLT));
                             for t in &mat.textures { ui.label(RichText::new(format!("    {}", t)).monospace().size(10.5).color(DIM)); }
                         }
                     });
@@ -500,7 +629,7 @@ impl Workshop {
                 egui::Frame::none().fill(G2).stroke(Stroke::new(1.0, LINE)).rounding(6.0).inner_margin(10.0).show(ui, |ui| {
                     for (name, size, stored) in &sv.members {
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new(if *stored { "•" } else { "→" }).color(if *stored { VOLT } else { FAINT }));
+                            ui.label(RichText::new(if *stored { "+" } else { "-" }).color(if *stored { VOLT } else { FAINT }));
                             ui.add(egui::Label::new(RichText::new(basename(name)).monospace().size(10.5).color(if *stored { TX } else { FAINT })).truncate());
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| ui.label(RichText::new(format!("{size}")).monospace().size(10.0).color(FAINT)));
                         });
@@ -527,18 +656,47 @@ impl Workshop {
     }
 
     fn ui_settings(&mut self, ctx: &egui::Context) {
+        let reload = std::cell::Cell::new(false);
         egui::CentralPanel::default().frame(egui::Frame::none().fill(G1).inner_margin(24.0)).show(ctx, |ui| {
             ui.label(RichText::new("SETTINGS").color(TX).size(20.0).strong());
             ui.add_space(4.0);
-            ui.label(RichText::new("Where the game & tools live, and how the bench looks.").color(DIM).size(12.5));
+            ui.label(RichText::new(format!("Saved to {}. No paths are baked into the app.", config_path().display())).color(DIM).size(12.0));
             ui.add_space(14.0);
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 card(ui, "paths", |ui| {
-                    let game = tab::GAME_DIR;
-                    setting_row(ui, "Game install", game, true);
-                    setting_row(ui, "Oodle DLL", &self.oodle_dll, self.oodle.is_some());
-                    let fl = if self.names.is_empty() { "(load a filelist to un-hash names)".to_string() } else { format!("{} names loaded", self.names.len()) };
-                    setting_row(ui, "Filelist", &fl, !self.names.is_empty());
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("GAME FOLDER").color(DIM).size(9.5).strong());
+                        if ui.button("Browse…").clicked() {
+                            if let Some(d) = rfd::FileDialog::new().pick_folder() {
+                                self.config.game_dir = d.to_string_lossy().replace('\\', "/");
+                                save_config(&self.config); reload.set(true);
+                            }
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if !self.config.game_dir.is_empty() { ok_check(ui); }
+                            let g = if self.config.game_dir.is_empty() { "(not set — Browse to the Just Cause 4 folder)".to_string() } else { self.config.game_dir.clone() };
+                            ui.add(egui::Label::new(RichText::new(g).monospace().size(11.0).color(TX)).truncate());
+                        });
+                    });
+                    ui.add_space(5.0);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("FILELIST").color(DIM).size(9.5).strong());
+                        if ui.button("Browse…").clicked() {
+                            if let Some(f) = rfd::FileDialog::new().add_filter("filelist", &["filelist", "txt"]).pick_file() {
+                                self.config.filelist = f.to_string_lossy().replace('\\', "/");
+                                save_config(&self.config); reload.set(true);
+                            }
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if !self.names.is_empty() { ok_check(ui); }
+                            let fl = if self.config.filelist.is_empty() { "(optional — a gibbed filelist un-hashes names)".to_string() }
+                                else { format!("{} names · {}", self.names.len(), basename(&self.config.filelist)) };
+                            ui.add(egui::Label::new(RichText::new(fl).monospace().size(11.0).color(TX)).truncate());
+                        });
+                    });
+                    ui.add_space(5.0);
+                    let oodle_ok = std::path::Path::new(&self.oodle_dll).exists();
+                    setting_row(ui, "Oodle DLL", if self.oodle_dll.is_empty() { "(derived from game folder)" } else { &self.oodle_dll }, oodle_ok);
                 });
                 card(ui, "rendering", |ui| {
                     setting_row(ui, "Backend", "wgpu", true);
@@ -559,14 +717,23 @@ impl Workshop {
                 });
             });
         });
+        if reload.get() { self.apply_config(); }
     }
+}
+
+fn ok_check(ui: &mut egui::Ui) {
+    let (r, _) = ui.allocate_exact_size(egui::vec2(13.0, 12.0), egui::Sense::hover());
+    let c = r.center();
+    let st = Stroke::new(1.7, VOLT);
+    ui.painter().line_segment([c + egui::vec2(-3.5, 0.0), c + egui::vec2(-1.0, 2.6)], st);
+    ui.painter().line_segment([c + egui::vec2(-1.0, 2.6), c + egui::vec2(3.6, -3.2)], st);
 }
 
 fn setting_row(ui: &mut egui::Ui, label: &str, value: &str, ok: bool) {
     ui.horizontal(|ui| {
         ui.label(RichText::new(label.to_uppercase()).color(DIM).size(9.5).strong());
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ok { ui.label(RichText::new("✓").color(VOLT).size(11.0)); }
+            if ok { ok_check(ui); }
             ui.add(egui::Label::new(RichText::new(value).monospace().size(11.0).color(TX)).truncate());
         });
     });
