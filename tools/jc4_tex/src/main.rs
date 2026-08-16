@@ -54,6 +54,19 @@ fn main() {
                 println!("wrote {out}");
             }
         }
+        "png" => {
+            if a.len() < 4 { eprintln!("usage: jc4_tex png <ddsc> <out.png> [hmddsc]"); return; }
+            let ddsc = std::fs::read(&a[2]).unwrap();
+            let hm = a.get(4).map(|p| std::fs::read(p).unwrap());
+            match avtx::decode_rgba_from(&ddsc, hm.as_deref()) {
+                Ok((w, h, rgba)) => {
+                    std::fs::write(&a[3], jc4_formats::amf::to_png_rgba(w as usize, h as usize, &rgba)).unwrap();
+                    let nonblack = rgba.chunks_exact(4).filter(|p| p[0] != 0 || p[1] != 0 || p[2] != 0).count();
+                    println!("{w}x{h} {} -> {}  ({}/{} non-black)", if hm.is_some() { "hi-res" } else { "inline" }, a[3], nonblack, w * h);
+                }
+                Err(e) => eprintln!("{e}"),
+            }
+        }
         "verify" => {
             let (mut ok, mut bad) = (0u32, 0u32);
             let mut census: BTreeMap<u32, u32> = BTreeMap::new();
