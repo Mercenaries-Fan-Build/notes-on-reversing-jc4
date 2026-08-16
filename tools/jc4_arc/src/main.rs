@@ -341,31 +341,37 @@ fn fetch_paths(needed: &std::collections::BTreeSet<String>, sarc: &[u8], game_di
     out
 }
 
-/// Resolve each submesh's diffuse to a HI-RES `Texture` (`.ddsc` header + `.hmddsc` base mip when present).
+/// Decode a resource path (with its `.hmddsc` sibling) into the pool, deduped; return the pool index.
+fn resolve_one(pool: &mut Vec<jc4_formats::amf::Texture>, idx: &mut HashMap<String, Option<usize>>,
+               bytes: &HashMap<String, Vec<u8>>, path: &Option<String>) -> Option<usize> {
+    let p = path.as_ref()?;
+    if let Some(&i) = idx.get(p) { return i; }
+    let tex = bytes.get(p).and_then(|dd| jc4_formats::avtx::decode_rgba_from(dd, bytes.get(&hmddsc_of(p)).map(|v| v.as_slice())).ok())
+        .map(|(w, h, rgba)| jc4_formats::amf::Texture { w: w as usize, h: h as usize, rgba });
+    if tex.is_none() { eprintln!("  tex MISSING {p}"); }
+    let slot = tex.map(|t| { pool.push(t); pool.len() - 1 });
+    idx.insert(p.clone(), slot);
+    slot
+}
+
+/// Resolve each submesh's CarPaint textures (`_dif`/`_nrm`/`_mpm`, each with `.hmddsc` hi-res) into a pool.
 fn resolve_model_textures(sarc: &[u8], mesh: &jc4_formats::amf::Mesh, game_dir: Option<&str>, dll: &str)
-    -> (Vec<jc4_formats::amf::Texture>, Vec<Option<usize>>) {
-    use jc4_formats::{amf, avtx};
-    let mut diffuse: Vec<String> = mesh.submeshes.iter().filter_map(|s| s.diffuse.clone()).collect();
-    diffuse.sort(); diffuse.dedup();
+    -> (Vec<jc4_formats::amf::Texture>, Vec<jc4_formats::amf::SubTex>) {
     let mut needed = std::collections::BTreeSet::new();
-    for d in &diffuse { needed.insert(d.clone()); needed.insert(hmddsc_of(d)); }
+    for sm in &mesh.submeshes {
+        for p in [&sm.diffuse, &sm.normal, &sm.mpm].into_iter().flatten() {
+            needed.insert(p.clone());
+            needed.insert(hmddsc_of(p));
+        }
+    }
     let bytes = fetch_paths(&needed, sarc, game_dir, dll);
     let mut pool = Vec::new();
     let mut idx: HashMap<String, Option<usize>> = HashMap::new();
-    for d in &diffuse {
-        let tex = bytes.get(d).and_then(|dd| {
-            let hm = bytes.get(&hmddsc_of(d)).map(|v| v.as_slice());
-            avtx::decode_rgba_from(dd, hm).ok()
-        }).map(|(w, h, rgba)| amf::Texture { w: w as usize, h: h as usize, rgba });
-        if tex.is_none() { eprintln!("  tex MISSING {d}"); }
-        if let (Ok(dir), Some(t)) = (std::env::var("JC4_TEXDUMP"), &tex) {
-            let name = d.rsplit('/').next().unwrap_or("t").trim_end_matches(".ddsc");
-            let _ = std::fs::create_dir_all(&dir);
-            let _ = std::fs::write(format!("{dir}/{name}.png"), jc4_formats::amf::to_png_rgba(t.w, t.h, &t.rgba));
-        }
-        idx.insert(d.clone(), tex.map(|t| { pool.push(t); pool.len() - 1 }));
-    }
-    let sub = mesh.submeshes.iter().map(|s| s.diffuse.as_ref().and_then(|p| idx.get(p).copied().flatten())).collect();
+    let sub = mesh.submeshes.iter().map(|sm| jc4_formats::amf::SubTex {
+        dif: resolve_one(&mut pool, &mut idx, &bytes, &sm.diffuse),
+        nrm: resolve_one(&mut pool, &mut idx, &bytes, &sm.normal),
+        mpm: resolve_one(&mut pool, &mut idx, &bytes, &sm.mpm),
+    }).collect();
     (pool, sub)
 }
 
@@ -533,7 +539,8 @@ fn main() {
                                 let c = if ((x / 16) + (y / 16)) % 2 == 0 { [230, 60, 60, 255] } else { [240, 240, 240, 255] };
                                 rgba[(y * tw + x) * 4..(y * tw + x) * 4 + 4].copy_from_slice(&c);
                             }}
-                            (vec![jc4_formats::amf::Texture { w: tw, h: th, rgba }], m.submeshes.iter().map(|_| Some(0)).collect::<Vec<_>>())
+                            (vec![jc4_formats::amf::Texture { w: tw, h: th, rgba }],
+                             m.submeshes.iter().map(|_| jc4_formats::amf::SubTex { dif: Some(0), nrm: None, mpm: None }).collect::<Vec<_>>())
                         } else {
                             resolve_model_textures(&b, &m, game, &oodle_dll_from_env())
                         };
