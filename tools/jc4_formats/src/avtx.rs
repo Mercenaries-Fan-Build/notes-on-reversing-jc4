@@ -162,6 +162,25 @@ pub fn decode_rgba(m: &Mip) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+/// Decode to RGBA using the HI-RES base mip when the external `.hmddsc` stream is supplied — that stream
+/// holds the largest mips (largest-first), so level 0 = full `width×height`. Falls back to the best inline
+/// mip if there's no external stream or it's too short. Returns `(width, height, rgba)`.
+pub fn decode_rgba_from(ddsc: &[u8], hmddsc: Option<&[u8]>) -> Result<(u32, u32, Vec<u8>), String> {
+    let h = parse_header(ddsc)?;
+    if let (Some(hm), true) = (hmddsc, h.has_external_mips()) {
+        let (w, ht) = (h.width as u32, h.height as u32);
+        if let Some(size) = mip_size(w, ht, h.dxgi_format) {
+            if size <= hm.len() {
+                let mip = Mip { width: w, height: ht, dxgi_format: h.dxgi_format, data: hm[..size].to_vec() };
+                if let Ok(rgba) = decode_rgba(&mip) { return Ok((w, ht, rgba)); }
+            }
+        }
+    }
+    let mip = best_inline_mip(ddsc)?;
+    let rgba = decode_rgba(&mip)?;
+    Ok((mip.width, mip.height, rgba))
+}
+
 /// Wrap a mip in a DDS container (DX10 extended header, carries the DXGI format verbatim) so it opens
 /// in any DDS viewer / community tool.
 pub fn to_dds(m: &Mip) -> Vec<u8> {
