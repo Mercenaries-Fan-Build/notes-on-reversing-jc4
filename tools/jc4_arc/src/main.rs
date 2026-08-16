@@ -546,7 +546,11 @@ fn main() {
                         };
                         let ntex = pool.len();
                         let size = a.iter().position(|s| s == "--size").and_then(|i| a.get(i + 1)).and_then(|s| s.parse().ok()).unwrap_or(512);
-                        std::fs::write(png, jc4_formats::amf::render_png_tex(&m, size, yaw, pitch, &pool, &sub)).unwrap();
+                        let paint = a.iter().position(|s| s == "--paint").and_then(|i| a.get(i + 1)).map(|s| {
+                            let v: Vec<f32> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                            [*v.first().unwrap_or(&1.0), *v.get(1).unwrap_or(&1.0), *v.get(2).unwrap_or(&1.0)]
+                        }).unwrap_or([1.0; 3]);
+                        std::fs::write(png, jc4_formats::amf::render_png_tex(&m, size, yaw, pitch, paint, &pool, &sub)).unwrap();
                         println!("merged model: {} verts, {} tris, {ntex} textures -> {png}", m.positions.len(), m.indices.len() / 3);
                     }
                     Err(e) => eprintln!("decode_model: {e}"),
