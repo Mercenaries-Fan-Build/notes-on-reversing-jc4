@@ -263,6 +263,122 @@ fn cmd_hex(tab: &str, n: usize) {
     }
 }
 
+// Scan a decoded blob for path-like ASCII strings and add them to `out`. This is how we un-hash:
+// SARC name heaps, ADF/RTPC string fields and resourcebundle members all embed *real* asset paths as
+// plain ASCII in the decompressed bytes. A run of path chars that contains a '/' and a '.' (extension
+// in the basename) is a candidate; we normalise to lowercase/forward-slash (how TAB paths are hashed).
+fn harvest_paths(data: &[u8], out: &mut std::collections::BTreeSet<String>) {
+    let is_pc = |b: u8| matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b'/' | b'\\' | b'.' | b'-');
+    let n = data.len();
+    let mut i = 0;
+    while i < n {
+        if !is_pc(data[i]) { i += 1; continue; }
+        let start = i;
+        while i < n && is_pc(data[i]) { i += 1; }
+        let s = &data[start..i];
+        if s.len() < 6 || !s.contains(&b'/') { continue; }
+        let st = match std::str::from_utf8(s) { Ok(x) => x, Err(_) => continue };
+        let norm = st.to_ascii_lowercase().replace('\\', "/");
+        // no doubled separators, and a real top-level directory (lowercase word: locations/ animations/ ui/ …)
+        if norm.contains("//") || norm.contains("..") { continue; }
+        let first = norm.split('/').next().unwrap_or("");
+        if first.len() < 2 || !first.starts_with(|c: char| c.is_ascii_lowercase())
+            || !first.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_') { continue; }
+        // basename.ext, with a real-looking extension (letter-led, alphanumeric, ≤12)
+        let base = norm.rsplit('/').next().unwrap_or("");
+        let ext = match base.rsplit_once('.') { Some((stem, e)) if !stem.is_empty() => e, _ => continue };
+        if ext.len() < 2 || ext.len() > 12
+            || !ext.starts_with(|c: char| c.is_ascii_alphabetic())
+            || !ext.bytes().all(|c| c.is_ascii_alphanumeric()) { continue; }
+        // reject binary noise: require majority-alphanumeric AND a real word (≥3-letter run)
+        let alnum = norm.bytes().filter(|c| c.is_ascii_alphanumeric()).count();
+        if alnum * 2 < norm.len() { continue; }
+        let mut run = 0u32;
+        let has_word = norm.bytes().any(|c| { run = if c.is_ascii_alphabetic() { run + 1 } else { 0 }; run >= 3 });
+        if !has_word { continue; }
+        out.insert(norm);
+    }
+}
+
+/// Walk `<game_dir>/archives_win64` for `.tab`/`.arc` pairs (recursively).
+fn discover_tabs(game_dir: &str) -> Vec<std::path::PathBuf> {
+    let root = std::path::Path::new(game_dir).join("archives_win64");
+    let mut out = Vec::new();
+    let mut stack = vec![root];
+    while let Some(dir) = stack.pop() {
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.is_dir() { stack.push(p); }
+                else if p.extension().map_or(false, |x| x == "tab") { out.push(p); }
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+// Build a name dictionary by (a) merging any gibbed filelists under `--gibbed DIR`, then (b) harvesting
+// path strings embedded in every decoded entry across the game's archives. Writes unique paths (one per
+// line) to `out` — a filelist the workshop loads directly — and reports how many real entry hashes the
+// merged dictionary now resolves. `--only SUB` limits to archives whose path contains SUB (fast scoping).
+fn cmd_dict(game_dir: &str, out_path: &str, gibbed: Option<&str>, only: Option<&str>) {
+    use std::collections::BTreeSet;
+    let dll = oodle_dll_from_env();
+    let mut paths: BTreeSet<String> = BTreeSet::new();
+    // (a) merge gibbed filelists
+    if let Some(g) = gibbed {
+        let mut stack = vec![std::path::PathBuf::from(g)];
+        let (mut files, mut merged) = (0u32, 0usize);
+        while let Some(p) = stack.pop() {
+            if p.is_dir() { if let Ok(rd) = std::fs::read_dir(&p) { for e in rd.flatten() { stack.push(e.path()); } } }
+            else if let Ok(txt) = std::fs::read_to_string(&p) {
+                files += 1;
+                for line in txt.lines() {
+                    let l = line.trim();
+                    if !l.is_empty() && !l.starts_with(';') { paths.insert(l.to_ascii_lowercase().replace('\\', "/")); merged += 1; }
+                }
+            }
+        }
+        eprintln!("gibbed: merged {merged} lines from {files} filelist(s) -> {} unique", paths.len());
+    }
+    // (b) self-harvest across archives
+    let tabs = discover_tabs(game_dir);
+    let mut entry_hashes: HashSet<u32> = HashSet::new();
+    let mut oodle: Option<Oodle> = None;
+    let mut scanned = 0u32;
+    for tab_path in &tabs {
+        let label = tab_path.to_string_lossy().replace('\\', "/");
+        if let Some(sub) = only { if !label.to_lowercase().contains(&sub.to_lowercase()) { continue; } }
+        let arc_path = tab_path.with_extension("arc");
+        let b = match std::fs::read(tab_path) { Ok(b) => b, Err(_) => continue };
+        let t = match parse_tab(&b) { Ok(t) => t, Err(_) => continue };
+        let mut arc = match File::open(&arc_path) { Ok(f) => f, Err(_) => continue };
+        let before = paths.len();
+        for e in &t.entries {
+            entry_hashes.insert(e.name_hash);
+            if let Ok(data) = decode_entry(&mut arc, &t, e, &dll, &mut oodle) { harvest_paths(&data, &mut paths); }
+        }
+        scanned += 1;
+        eprintln!("[{scanned}] {}  (+{} paths, {} total)",
+            tab_path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
+            paths.len() - before, paths.len());
+    }
+    // coverage: how many real entry hashes does the merged dictionary resolve?
+    let dict_hashes: HashSet<u32> = paths.iter().map(|p| hashlittle(p.as_bytes(), 0)).collect();
+    let covered = entry_hashes.iter().filter(|h| dict_hashes.contains(h)).count();
+    let total = entry_hashes.len().max(1);
+    // write
+    let mut s = String::with_capacity(paths.len() * 48);
+    for p in &paths { s.push_str(p); s.push('\n'); }
+    match std::fs::write(out_path, &s) {
+        Ok(_) => println!("wrote {} unique paths -> {out_path}", paths.len()),
+        Err(x) => { eprintln!("write {out_path}: {x}"); return; }
+    }
+    println!("coverage: {covered}/{total} entry hashes resolved ({:.1}%) across {scanned} archive(s)",
+        100.0 * covered as f64 / total as f64);
+}
+
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     if a.len() < 3 {
@@ -277,6 +393,8 @@ fn main() {
         eprintln!("  jc4_arc sarc   <sarc/.ee/model>                 list a SARC's grouped member files");
         eprintln!("  jc4_arc model  <sarc>                           model assembly: LODs/materials/textures/mesh");
         eprintln!("  jc4_arc extract <tab> <arc> <outdir> [limit]    decode payloads (raw/zlib/Oodle)");
+        eprintln!("  jc4_arc dict   <game_dir> <out.filelist> [--gibbed DIR] [--only SUB]");
+        eprintln!("                                                 build a name dictionary (harvest embedded paths + merge gibbed)");
         return;
     }
     match a[1].as_str() {
@@ -301,6 +419,12 @@ fn main() {
             let fl = a.iter().position(|s| s == "--filelist").and_then(|i| a.get(i + 1)).map(|p| load_filelist_map(p));
             let msub = a.iter().position(|s| s == "--match").and_then(|i| a.get(i + 1)).cloned();
             cmd_extract(&a[2], &a[3], &a[4], limit, &oodle_dll_from_env(), fl.as_ref(), msub.as_deref());
+        }
+        "dict" => {
+            if a.len() < 4 { eprintln!("usage: jc4_arc dict <game_dir> <out.filelist> [--gibbed DIR] [--only SUB]"); return; }
+            let gibbed = a.iter().position(|s| s == "--gibbed").and_then(|i| a.get(i + 1)).map(|s| s.as_str());
+            let only = a.iter().position(|s| s == "--only").and_then(|i| a.get(i + 1)).map(|s| s.as_str());
+            cmd_dict(&a[2], &a[3], gibbed, only);
         }
         other => eprintln!("unknown command {other}"),
     }
