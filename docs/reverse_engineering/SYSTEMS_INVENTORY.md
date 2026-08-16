@@ -18,15 +18,15 @@ Status: ✅ documented · ◻ pending · 🔶 partial (covered inside another do
 | Doc | Systems / anchor classes | Status |
 |---|---|---|
 | behavior_system.md | Condition VM + action graph + the lookup3 type registry | ✅ |
-| entity_core_ecs.md | `CGameObjectManager`, `CTransformComponent`, `CInspectableComponent`, `CConditionalManager`, `CActionTokenManager`, entity/component lifecycle, the reflection/type registry spine | ◻ |
+| entity_core_ecs.md | `CGameObjectManager`, `CTransformComponent`, `CInspectableComponent`, `CConditionalManager`, `CActionTokenManager`, entity/component lifecycle, the reflection/type registry spine | ✅ |
 | event_scheduler.md | `CGameplayEventManager` (event bus), `CBinaryStateObjectManager`, `CTimestampManager`, scheduler/tick, `CSettingsManager` | ◻ |
 
 ## Pillar 2 — Rendering & graphics
 | Doc | Systems / anchor classes | Status |
 |---|---|---|
 | rendering_graphics.md | `CRenderBlock*` shader family (General/Character/CarPaint/Bark/Hologram/EnergyShield/DemonDome/DemonOrganic/Weather), `CModelInstanceManager`, `CMeshEffectManager`, `ChromaManager`, deferred/HDR/bloom/SSR (`CompositeBloom`, `Checkerboard*HDR`, `CompositeScreenSpaceReflection*`), occlusion | ✅ |
-| lighting_shadows.md | lighting, shadow pipeline (cloud shadows, `CarPaintShadow*`, `CharacterDepthShadow*`), `CSpotlightController`, `CLightOcclusionPlaneObject` | ◻ |
-| environment_tod.md | `CTimeOfDayController`, `CEnvironmentGfxManager`, `CEnvironmentGraphicsModifierManager`, sky/atmosphere, weather GPU fluid sim (`FUN_1401f7f70`, Navier-Stokes compute) | ◻ |
+| lighting_shadows.md | lighting, shadow pipeline (cloud shadows, `CarPaintShadow*`, `CharacterDepthShadow*`), `CSpotlightController`, `CLightOcclusionPlaneObject` | ✅ |
+| environment_tod.md | `CTimeOfDayController`, `CEnvironmentGfxManager`, `CEnvironmentGraphicsModifierManager`, sky/atmosphere, weather GPU fluid sim (`FUN_1401f7f70`, Navier-Stokes compute) | ✅ |
 
 ## Pillar 3 — Environment & weather (signature)
 | Doc | Systems / anchor classes | Status |
@@ -50,7 +50,7 @@ Status: ✅ documented · ◻ pending · 🔶 partial (covered inside another do
 | Doc | Systems / anchor classes | Status |
 |---|---|---|
 | ai_combat_encounters.md | `CAiSystem`, `CCombatCoordinator`, `CEncounterManager`, `CEncounterEngagedController`, `CTacticalNodeManager`, `CTargetSystem` | ✅ |
-| characters_creatures.md | `CCharacterManager`, `CCreatureManager`, `CPlayerManager`, character controller, NPC roles | ◻ |
+| characters_creatures.md | `CCharacterManager`, `CCreatureManager`, `CPlayerManager`, character controller, NPC roles | ✅ |
 | road_graph_driving.md | AI vehicle driving on the road graph (`CRoadManager` consumer side) | ◻ |
 
 ## Pillar 7 — The Demon antagonist (endgame/DLC)
@@ -75,7 +75,7 @@ Status: ✅ documented · ◻ pending · 🔶 partial (covered inside another do
 |---|---|---|
 | grappling_hook.md | grapple / tether / reel / winch | ✅ |
 | traversal_movement.md | parachute / wingsuit / hoverboard / locomotion | ✅ |
-| camera_input.md | `CCameraManager`, camera modifiers (`CMoveInput*`/`CRollModifier`), `CInputSystem`, `CUIInputManager` | ◻ |
+| camera_input.md | `CCameraManager`, camera modifiers (`CMoveInput*`/`CRollModifier`), `CInputSystem`, `CUIInputManager` | ✅ |
 
 ## Pillar 11 — Vehicles
 | Doc | Systems / anchor classes | Status |
@@ -87,12 +87,12 @@ Status: ✅ documented · ◻ pending · 🔶 partial (covered inside another do
 | Doc | Systems / anchor classes | Status |
 |---|---|---|
 | weapons.md | weapon component framework + firing math | ✅ |
-| weapon_gadget_components.md | the ~30 `C*WeaponComponent` catalog (Turret/Magnet/Laser/LightningBeam/Scope/Spotlight/Physicalization/HitReactionCast/CameraSwap/BarrelSpin/AirplaneFlyby/FOW/Lockon/Cylinder/Cannon/…), `CWeaponManager`, `CAmmunitionManager`, `CRetoolerManager` (mods) | ◻ |
+| weapon_gadget_components.md | the ~30 `C*WeaponComponent` catalog (Turret/Magnet/Laser/LightningBeam/Scope/Spotlight/Physicalization/HitReactionCast/CameraSwap/BarrelSpin/AirplaneFlyby/FOW/Lockon/Cylinder/Cannon/…), `CWeaponManager`, `CAmmunitionManager`, `CRetoolerManager` (mods) | ✅ |
 
 ## Pillar 13 — Progression, economy & supply
 | Doc | Systems / anchor classes | Status |
 |---|---|---|
-| progression_economy.md | `CStashManager`, `CSupplyDropManager`, `CSupplyFactory(Manager)`, `CSupplyRewardManager`, `CRewardSystem`, `CNewGamePlusManager`, inventory/equipment, unlocks | 🔶 |
+| progression_economy.md | `CStashManager`, `CSupplyDropManager`, `CSupplyFactory(Manager)`, `CSupplyRewardManager`, `CRewardSystem`, `CNewGamePlusManager`, inventory/equipment, unlocks | ✅ |
 
 ## Pillar 14 — Audio & dialogue
 | Doc | Systems / anchor classes | Status |
@@ -117,7 +117,7 @@ Status: ✅ documented · ◻ pending · 🔶 partial (covered inside another do
 ## Pillar 18 — Effects & particles
 | Doc | Systems / anchor classes | Status |
 |---|---|---|
-| effects_particles.md | `CEffectSystem`, `CMeshEffectManager`, `CPfxBodyPropsSystem`, GPU particle force-field affectors (`VFX_GlobalWind`, `DampingParams`, `GravityPointParams`, `SimplexCurlNoise`, …), decals (`CHavokDestructionDecalManager`) | ◻ |
+| effects_particles.md | `CEffectSystem`, `CMeshEffectManager`, `CPfxBodyPropsSystem`, GPU particle force-field affectors (`VFX_GlobalWind`, `DampingParams`, `GravityPointParams`, `SimplexCurlNoise`, …), decals (`CHavokDestructionDecalManager`) | ✅ |
 
 ---
 
