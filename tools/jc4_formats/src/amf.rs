@@ -311,6 +311,13 @@ pub fn rasterize_rgba(m: &Mesh, w: usize, h: usize, yaw: f32, pitch: f32, base: 
     color
 }
 
+/// Encode an RGBA buffer as an RGB PNG (alpha over black) — for dumping a decoded texture to view.
+pub fn to_png_rgba(w: usize, h: usize, rgba: &[u8]) -> Vec<u8> {
+    let mut rgb = vec![0u8; w * h * 3];
+    for (o, px) in rgba.chunks_exact(4).enumerate() { rgb[o * 3..o * 3 + 3].copy_from_slice(&px[..3]); }
+    png(w, h, &rgb)
+}
+
 /// Render oracle: rasterize and composite over a dark ground → RGB PNG (`jc4_arc mesh/model --png`).
 pub fn render_png(m: &Mesh, size: usize, yaw: f32, pitch: f32) -> Vec<u8> { render_png_tex(m, size, yaw, pitch, &[], &[]) }
 pub fn render_png_tex(m: &Mesh, size: usize, yaw: f32, pitch: f32, pool: &[Texture], sub_tex: &[Option<usize>]) -> Vec<u8> {
