@@ -890,7 +890,22 @@ impl Workshop {
             if let Some(mesh) = self.mesh.as_ref() {
                 let (pool, sub): (&[amf::Texture], &[Option<usize>]) =
                     if self.model_textured { (&self.model_tex_pool, &self.model_sub_tex) } else { (&[], &[]) };
-                let rgba = amf::rasterize_rgba(mesh, w, h, self.orbit.0, self.orbit.1, [ACC.r(), ACC.g(), ACC.b()], pool, sub);
+                // supersample 2x then box-downsample — dense meshes are ~1 tri/px and alias badly otherwise
+                let ss = 2;
+                let (rw, rh) = (w * ss, h * ss);
+                let hi = amf::rasterize_rgba(mesh, rw, rh, self.orbit.0, self.orbit.1, [ACC.r(), ACC.g(), ACC.b()], pool, sub);
+                let mut rgba = vec![0u8; w * h * 4];
+                for y in 0..h {
+                    for x in 0..w {
+                        let (mut acc, n) = ([0u32; 4], (ss * ss) as u32);
+                        for dy in 0..ss { for dx in 0..ss {
+                            let o = (((y * ss + dy) * rw) + (x * ss + dx)) * 4;
+                            for c in 0..4 { acc[c] += hi[o + c] as u32; }
+                        }}
+                        let o = (y * w + x) * 4;
+                        for c in 0..4 { rgba[o + c] = (acc[c] / n) as u8; }
+                    }
+                }
                 let img = egui::ColorImage::from_rgba_unmultiplied([w, h], &rgba);
                 self.model_tex = Some(ui.ctx().load_texture("model_tex", img, egui::TextureOptions::LINEAR));
                 self.model_render = want;
