@@ -66,6 +66,7 @@ fn main() -> eframe::Result<()> {
         install_theme(&cc.egui_ctx);
         let mut app = Workshop::default();
         app.config = load_config();
+        app.highlights = load_highlights();
         app.apply_config();
         Ok(Box::new(app))
     }))
@@ -121,6 +122,21 @@ enum Page { #[default] Inspect, Settings }
 
 #[derive(Default, Clone)]
 struct Config { game_dir: String, oodle_dll: String, filelist: String }
+
+/// A curated navigator shortcut (see data/highlights.txt) — jumps to a notable unit across archives.
+struct Highlight { tag: String, label: String, archive: String, path: String }
+fn load_highlights() -> Vec<Highlight> {
+    include_str!("../data/highlights.txt").lines().filter_map(|l| {
+        let l = l.trim();
+        if l.is_empty() || l.starts_with('#') { return None; }
+        let f: Vec<&str> = l.split('|').map(|s| s.trim()).collect();
+        if f.len() < 4 { return None; }
+        Some(Highlight { tag: f[0].to_string(), label: f[1].to_string(), archive: f[2].to_string(), path: f[3].to_string() })
+    }).collect()
+}
+fn tag_color(tag: &str) -> Color32 {
+    match tag { "MODEL" => ACC, "TEX" => VOLT, "STRUCT" => VOLT, "UI" => INFO, _ => DIM }
+}
 
 /// Config lives in a text file (no hardcoded paths in the binary). Windows: `%APPDATA%\jc4_workshop\config.txt`.
 fn config_path() -> PathBuf {
@@ -188,6 +204,7 @@ struct Workshop {
     tex_pending: Option<egui::ColorImage>,     // decoded RGBA awaiting upload (needs ctx, done in update)
     mesh: Option<amf::Mesh>,                   // decoded model geometry (current selection)
     orbit: (f32, f32),                         // model viewport camera (yaw, pitch)
+    highlights: Vec<Highlight>,                // curated navigator shortcuts
 }
 
 fn basename(s: &str) -> &str { s.rsplit(['/', '\\']).next().unwrap_or(s) }
@@ -241,6 +258,18 @@ impl Workshop {
     }
     fn entry_label(&self, e: &tab::Entry) -> String {
         self.names.get(&e.name_hash).map(|p| basename(p).to_string()).unwrap_or_else(|| format!("{:08x}", e.name_hash))
+    }
+
+    /// Jump to a curated highlight: open its archive (if needed), then select the entry by name hash.
+    fn jump(&mut self, archive_label: &str, path: &str) {
+        if let Some((_, p)) = self.archives.iter().find(|(l, _)| l == archive_label).cloned() {
+            if self.archive.as_ref().map_or(true, |a| a.tab_path != p) { self.open_archive(p); }
+        }
+        let h = hashlittle(path.as_bytes(), 0);
+        match self.archive.as_ref().and_then(|a| a.tab.entries.iter().position(|e| e.name_hash == h)) {
+            Some(i) => self.select(i),
+            None => self.status = format!("highlight not found in archive: {path}"),
+        }
     }
 
     fn select(&mut self, i: usize) {
@@ -548,6 +577,7 @@ impl Workshop {
             .and_then(|a| archives.iter().find(|(_, p)| *p == a.tab_path).map(|(l, _)| l.clone()))
             .unwrap_or_else(|| "—".to_string());
         let mut switch: Option<PathBuf> = None;
+        let mut jump: Option<(String, String)> = None;
         egui::SidePanel::left("nav").default_width(310.0).frame(egui::Frame::none().fill(G1).inner_margin(12.0))
             .show(ctx, |ui| {
                 ui.label(RichText::new("ARCHIVE").color(TX).size(15.0).strong());
@@ -562,6 +592,22 @@ impl Workshop {
                             for (label, path) in &archives {
                                 if ui.selectable_label(*label == cur_label, RichText::new(label).monospace().size(11.5)).clicked() {
                                     switch = Some(path.clone());
+                                }
+                            }
+                        });
+                }
+                // curated highlights — jump straight to notable units, across archives
+                if !self.highlights.is_empty() {
+                    ui.add_space(8.0);
+                    egui::CollapsingHeader::new(RichText::new("★ HIGHLIGHTS").color(VOLT).size(11.0).strong())
+                        .default_open(true).show(ui, |ui| {
+                            for hl in &self.highlights {
+                                let resp = ui.horizontal(|ui| {
+                                    ui.label(RichText::new(&hl.tag).color(tag_color(&hl.tag)).size(8.0).strong());
+                                    ui.add(egui::Label::new(RichText::new(&hl.label).size(11.0).color(TX)).truncate());
+                                }).response;
+                                if ui.interact(resp.rect, egui::Id::new(("hl", &hl.path)), egui::Sense::click()).clicked() {
+                                    jump = Some((hl.archive.clone(), hl.path.clone()));
                                 }
                             }
                         });
@@ -605,6 +651,7 @@ impl Workshop {
                 if let Some(i) = pick { self.select(i); }
             });
         if let Some(p) = switch { self.open_archive(p); }
+        if let Some((arch, path)) = jump { self.jump(&arch, &path); }
         // upload a freshly-decoded texture (ctx available here)
         if let Some(img) = self.tex_pending.take() {
             self.tex = Some(ctx.load_texture("preview_tex", img, egui::TextureOptions::LINEAR));
