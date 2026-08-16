@@ -12,16 +12,23 @@ use crate::adf;
 pub struct Mesh {
     pub positions: Vec<[f32; 3]>,
     pub uvs: Vec<[f32; 2]>,
+    pub normals: Vec<[f32; 3]>,     // smooth per-vertex normals (computed from geometry)
     pub indices: Vec<u32>,
     pub bbox_min: [f32; 3],
     pub bbox_max: [f32; 3],
     pub submeshes: Vec<SubMesh>,
 }
 
-/// A contiguous run of triangles sharing one material. `material` = the mesh's `SubMeshId` (matches a
-/// modelc material Name); `diffuse` = that material's resolved diffuse `.ddsc` PATH (pixels resolved by the
-/// caller, which has archive access for external textures).
-pub struct SubMesh { pub tri_start: usize, pub tri_count: usize, pub material: Option<String>, pub diffuse: Option<String> }
+/// A contiguous run of triangles sharing one material (`material` = the mesh's `SubMeshId`, matching a
+/// modelc material Name). The three CarPaint texture PATHS are resolved to pixels by the caller.
+pub struct SubMesh {
+    pub tri_start: usize,
+    pub tri_count: usize,
+    pub material: Option<String>,
+    pub diffuse: Option<String>, // _dif  (albedo)
+    pub normal: Option<String>,  // _nrm  (BC5 tangent-space normal)
+    pub mpm: Option<String>,     // _mpm  (metalness/roughness properties)
+}
 
 /// A decoded RGBA texture the rasterizer can sample.
 pub struct Texture { pub w: usize, pub h: usize, pub rgba: Vec<u8> }
@@ -111,7 +118,8 @@ fn decode_from(header: &Value, vb: &[Vec<u8>], ib: &[Vec<u8>]) -> Result<Mesh, S
         uvs.extend(uv);
         indices.extend(idx.into_iter().map(|i| i + base));
         for (ts, tc, id) in subs {
-            submeshes.push(SubMesh { tri_start: tri_base + ts, tri_count: tc, material: Some(id).filter(|s| !s.is_empty()), diffuse: None });
+            submeshes.push(SubMesh { tri_start: tri_base + ts, tri_count: tc,
+                material: Some(id).filter(|s| !s.is_empty()), diffuse: None, normal: None, mpm: None });
         }
     }
     if positions.is_empty() { return Err("no vertices decoded".into()); }
@@ -122,7 +130,26 @@ fn decode_from(header: &Value, vb: &[Vec<u8>], ib: &[Vec<u8>]) -> Result<Mesh, S
     let eps = 1e-3 + 0.02 * (0..3).map(|i| (bmax[i] - bmin[i]).abs()).fold(0.0f32, f32::max);
     let inside = positions.iter().all(|p| (0..3).all(|i| p[i] >= bmin[i] - eps && p[i] <= bmax[i] + eps));
     if !inside { return Err("decoded positions fall outside the mesh BoundingBox (bad dequant/layout)".into()); }
-    Ok(Mesh { positions, uvs, indices, bbox_min: bmin, bbox_max: bmax, submeshes })
+    let normals = smooth_normals(&positions, &indices);
+    Ok(Mesh { positions, uvs, normals, indices, bbox_min: bmin, bbox_max: bmax, submeshes })
+}
+
+/// Area-weighted smooth per-vertex normals from the geometry (no packed-normal-stream decode needed).
+fn smooth_normals(positions: &[[f32; 3]], indices: &[u32]) -> Vec<[f32; 3]> {
+    let mut n = vec![[0f32; 3]; positions.len()];
+    for t in indices.chunks_exact(3) {
+        let (a, b, c) = (t[0] as usize, t[1] as usize, t[2] as usize);
+        let (pa, pb, pc) = (positions[a], positions[b], positions[c]);
+        let u = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]];
+        let w = [pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]];
+        let f = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]]; // area-weighted
+        for &vi in &[a, b, c] { for i in 0..3 { n[vi][i] += f[i]; } }
+    }
+    for v in &mut n {
+        let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+        if l > 1e-9 { for i in 0..3 { v[i] /= l; } } else { *v = [0.0, 1.0, 0.0]; }
+    }
+    n
 }
 
 fn decode_one_mesh(mesh: &Value, vb: &[Vec<u8>], ib: &[Vec<u8>]) -> Result<(Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<u32>, Vec<(usize, usize, String)>), String> {
@@ -244,12 +271,16 @@ fn png(w: usize, h: usize, rgb: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Software-rasterize the mesh (orbit yaw/pitch, orthographic, PER-PIXEL z-buffer) to RGBA with a
-/// TRANSPARENT background. Each submesh's diffuse `Texture` (parallel to `m.submeshes`, `None` = untextured)
-/// is sampled per pixel at the interpolated UV, then flat-shaded; untextured falls back to the `base` tint.
-/// Exact depth — no painter's-algo error. This is the workshop viewport / PNG-oracle renderer.
-pub fn rasterize_rgba(m: &Mesh, w: usize, h: usize, yaw: f32, pitch: f32, base: [u8; 3], pool: &[Texture], sub_tex: &[Option<usize>]) -> Vec<u8> {
-    let mut color = vec![0u8; w * h * 4]; // transparent
+/// Per-submesh CarPaint texture indices into the shared `Texture` pool.
+#[derive(Clone, Copy, Default)]
+pub struct SubTex { pub dif: Option<usize>, pub nrm: Option<usize>, pub mpm: Option<usize> }
+
+/// Software-rasterize the mesh to RGBA (transparent bg, per-pixel z-buffer) with a CarPaint-ish shader:
+/// interpolated smooth normals, albedo from `_dif`, metalness+roughness from `_mpm` (→ metal kills diffuse
+/// and tints the specular; dielectric gets a small white spec), Blinn-Phong specular, ambient + a faint
+/// metal env term. `nrm` maps not yet applied (needs tangents). Untextured falls back to the `base` tint.
+pub fn rasterize_rgba(m: &Mesh, w: usize, h: usize, yaw: f32, pitch: f32, base: [u8; 3], pool: &[Texture], sub_tex: &[SubTex]) -> Vec<u8> {
+    let mut color = vec![0u8; w * h * 4];
     let mut zbuf = vec![f32::NEG_INFINITY; w * h];
     let (cy, sy, cp, sp) = (yaw.cos(), yaw.sin(), pitch.cos(), pitch.sin());
     let rot = |v: [f32; 3]| { let (x, z) = (v[0] * cy + v[2] * sy, -v[0] * sy + v[2] * cy); [x, v[1] * cp - z * sp, v[1] * sp + z * cp] };
@@ -260,26 +291,28 @@ pub fn rasterize_rgba(m: &Mesh, w: usize, h: usize, yaw: f32, pitch: f32, base: 
         let r = rot([v[0] - c[0], v[1] - c[1], v[2] - c[2]]);
         [w as f32 * 0.5 + r[0] * scale, h as f32 * 0.5 - r[1] * scale, r[2]]
     }).collect();
-    // per-triangle diffuse texture
+    let rn: Vec<[f32; 3]> = m.normals.iter().map(|n| rot(*n)).collect(); // view-space smooth normals
     let tri_count = m.indices.len() / 3;
-    let mut tri_tex: Vec<Option<&Texture>> = vec![None; tri_count];
+    let get = |idx: Option<usize>| idx.and_then(|i| pool.get(i));
+    let (mut tri_dif, mut tri_mpm): (Vec<Option<&Texture>>, Vec<Option<&Texture>>) = (vec![None; tri_count], vec![None; tri_count]);
     for (si, sm) in m.submeshes.iter().enumerate() {
-        let t = sub_tex.get(si).and_then(|o| *o).and_then(|idx| pool.get(idx));
-        for k in sm.tri_start..(sm.tri_start + sm.tri_count).min(tri_count) { tri_tex[k] = t; }
+        let st = sub_tex.get(si).copied().unwrap_or_default();
+        let (d, mp) = (get(st.dif), get(st.mpm));
+        for k in sm.tri_start..(sm.tri_start + sm.tri_count).min(tri_count) { tri_dif[k] = d; tri_mpm[k] = mp; }
     }
     let uv = |i: usize| m.uvs.get(i).copied().unwrap_or([0.0, 0.0]);
-    let light = { let l = [0.35f32, 0.5, 0.79]; let n = (l[0] * l[0] + l[1] * l[1] + l[2] * l[2]).sqrt(); [l[0] / n, l[1] / n, l[2] / n] };
+    let norm = |v: [f32; 3]| { let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(1e-9); [v[0] / l, v[1] / l, v[2] / l] };
+    let light = norm([0.4, 0.55, 0.75]);
+    let view = [0.0, 0.0, 1.0];
+    let half = norm([light[0] + view[0], light[1] + view[1], light[2] + view[2]]);
+    let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
     let edge = |ax: f32, ay: f32, bx: f32, by: f32, px: f32, py: f32| (bx - ax) * (py - ay) - (by - ay) * (px - ax);
     for (ti, t) in m.indices.chunks_exact(3).enumerate() {
         let (ia, ib, ic) = (t[0] as usize, t[1] as usize, t[2] as usize);
         let (pa, pb, pc) = (proj[ia], proj[ib], proj[ic]);
         let (ua, ub, uc) = (uv(ia), uv(ib), uv(ic));
-        let texture = tri_tex[ti];
-        let n = { let u = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]]; let ww = [pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]];
-                  [u[1] * ww[2] - u[2] * ww[1], u[2] * ww[0] - u[0] * ww[2], u[0] * ww[1] - u[1] * ww[0]] };
-        let nl = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(1e-9);
-        let sh = ((n[0] * light[0] + n[1] * light[1] + n[2] * light[2]) / nl).abs() * 0.5 + 0.5;
-        let flat = [(base[0] as f32 * sh) as u8, (base[1] as f32 * sh) as u8, (base[2] as f32 * sh) as u8, 255];
+        let (na, nb, nc) = (rn.get(ia).copied().unwrap_or([0.0, 0.0, 1.0]), rn.get(ib).copied().unwrap_or([0.0, 0.0, 1.0]), rn.get(ic).copied().unwrap_or([0.0, 0.0, 1.0]));
+        let (dif, mpm) = (tri_dif[ti], tri_mpm[ti]);
         let area = edge(pa[0], pa[1], pb[0], pb[1], pc[0], pc[1]);
         if area.abs() < 1e-6 { continue; }
         let (minx, maxx) = (pa[0].min(pb[0]).min(pc[0]).floor().max(0.0) as usize, pa[0].max(pb[0]).max(pc[0]).ceil().min(w as f32 - 1.0) as usize);
@@ -294,17 +327,34 @@ pub fn rasterize_rgba(m: &Mesh, w: usize, h: usize, yaw: f32, pitch: f32, base: 
                 let depth = w0 * pa[2] + w1 * pb[2] + w2 * pc[2];
                 let i = py * w + px;
                 if depth <= zbuf[i] { continue; }
-                let col = match texture {
-                    Some(tx) => {
-                        let (uu, vv) = (w0 * ua[0] + w1 * ub[0] + w2 * uc[0], w0 * ua[1] + w1 * ub[1] + w2 * uc[1]);
-                        let s = tx.sample(uu, vv);
-                        if s[3] < 96 { continue; } // alpha-test cutouts
-                        [(s[0] as f32 * sh) as u8, (s[1] as f32 * sh) as u8, (s[2] as f32 * sh) as u8, 255]
-                    }
-                    None => flat,
+                let (uu, vv) = (w0 * ua[0] + w1 * ub[0] + w2 * uc[0], w0 * ua[1] + w1 * ub[1] + w2 * uc[1]);
+                // albedo
+                let alb = match dif {
+                    Some(tx) => { let s = tx.sample(uu, vv); if s[3] < 96 { continue; } [s[0] as f32 / 255.0, s[1] as f32 / 255.0, s[2] as f32 / 255.0] }
+                    None => [base[0] as f32 / 255.0, base[1] as f32 / 255.0, base[2] as f32 / 255.0],
                 };
+                // metalness / roughness from _mpm (R=metal, G=rough) — defaults: metallic body
+                let (metal, rough) = match mpm { Some(tx) => { let s = tx.sample(uu, vv); (s[0] as f32 / 255.0, (s[1] as f32 / 255.0).max(0.08)) } None => (0.85, 0.4) };
+                let n = norm([w0 * na[0] + w1 * nb[0] + w2 * nc[0], w0 * na[1] + w1 * nb[1] + w2 * nc[1], w0 * na[2] + w1 * nb[2] + w2 * nc[2]]);
+                let ndl = dot(n, light).max(0.0);
+                let ndh = dot(n, half).max(0.0);
+                // diffuse (metal has none) + ambient
+                let kd = (1.0 - metal) * (ndl * 0.85 + 0.28);
+                // specular: F0 from albedo (metal) or dielectric reflectance; sharpness from gloss
+                let gloss = 1.0 - rough;
+                let shin = 6.0 + gloss * gloss * 220.0;
+                let specpow = if ndl > 0.0 { ndh.powf(shin) } else { 0.0 };
+                let dielec = 0.59 * 0.08;
+                let env = 0.28 * metal; // faint reflected ambient so metal isn't black
+                let mut out = [0u8; 4];
+                for ch in 0..3 {
+                    let f0 = dielec * (1.0 - metal) + alb[ch] * metal;
+                    let v = alb[ch] * kd + specpow * (f0 + (1.0 - metal) * 0.35) + alb[ch] * env;
+                    out[ch] = (v.clamp(0.0, 1.0) * 255.0) as u8;
+                }
+                out[3] = 255;
                 zbuf[i] = depth;
-                color[i * 4..i * 4 + 4].copy_from_slice(&col);
+                color[i * 4..i * 4 + 4].copy_from_slice(&out);
             }
         }
     }
@@ -320,9 +370,9 @@ pub fn to_png_rgba(w: usize, h: usize, rgba: &[u8]) -> Vec<u8> {
 
 /// Render oracle: rasterize and composite over a dark ground → RGB PNG (`jc4_arc mesh/model --png`).
 pub fn render_png(m: &Mesh, size: usize, yaw: f32, pitch: f32) -> Vec<u8> { render_png_tex(m, size, yaw, pitch, &[], &[]) }
-pub fn render_png_tex(m: &Mesh, size: usize, yaw: f32, pitch: f32, pool: &[Texture], sub_tex: &[Option<usize>]) -> Vec<u8> {
+pub fn render_png_tex(m: &Mesh, size: usize, yaw: f32, pitch: f32, pool: &[Texture], sub_tex: &[SubTex]) -> Vec<u8> {
     let (w, h) = (size, size);
-    let rgba = rasterize_rgba(m, w, h, yaw, pitch, [255, 122, 51], pool, sub_tex);
+    let rgba = rasterize_rgba(m, w, h, yaw, pitch, [200, 200, 205], pool, sub_tex);
     let bg = [16u8, 22, 28];
     let mut rgb = vec![0u8; w * h * 3];
     for (o, px) in rgba.chunks_exact(4).enumerate() {
@@ -403,7 +453,7 @@ pub fn decode_model_asm(sarc_bytes: &[u8], rtpc_bytes: Option<&[u8]>, sel: PartS
         .filter(|m| m.stored && m.name.ends_with(".modelc"))
         .filter_map(|m| m.data(sarc_bytes).map(|d| (m.name.trim_end_matches(".modelc"), d)))
         .collect();
-    let mut out = Mesh { positions: Vec::new(), uvs: Vec::new(), indices: Vec::new(),
+    let mut out = Mesh { positions: Vec::new(), uvs: Vec::new(), normals: Vec::new(), indices: Vec::new(),
         bbox_min: [f32::MAX; 3], bbox_max: [f32::MIN; 3], submeshes: Vec::new() };
     let mut parts = 0;
     for m in &members {
@@ -424,12 +474,16 @@ pub fn decode_model_asm(sarc_bytes: &[u8], rtpc_bytes: Option<&[u8]>, sel: PartS
             out.positions.push(q);
             for i in 0..3 { out.bbox_min[i] = out.bbox_min[i].min(q[i]); out.bbox_max[i] = out.bbox_max[i].max(q[i]); }
         }
+        for &nrm in &mesh.normals { out.normals.push(if identity { nrm } else { xform_normal(&tf, nrm) }); }
         out.uvs.extend(&mesh.uvs);
         out.indices.extend(mesh.indices.iter().map(|i| i + base_i));
-        let matmap = modelc.get(stem).map(|mc| material_diffuse_map(mc)).unwrap_or_default();
+        let matmap = modelc.get(stem).map(|mc| material_textures_map(mc)).unwrap_or_default();
         for sm in &mesh.submeshes {
-            let diffuse = sm.material.as_ref().and_then(|m| matmap.get(m).cloned());
-            out.submeshes.push(SubMesh { tri_start: tri_start + sm.tri_start, tri_count: sm.tri_count, material: sm.material.clone(), diffuse });
+            let mt = sm.material.as_ref().and_then(|m| matmap.get(m));
+            out.submeshes.push(SubMesh {
+                tri_start: tri_start + sm.tri_start, tri_count: sm.tri_count, material: sm.material.clone(),
+                diffuse: mt.and_then(|t| t.dif.clone()), normal: mt.and_then(|t| t.nrm.clone()), mpm: mt.and_then(|t| t.mpm.clone()),
+            });
         }
         parts += 1;
     }
@@ -437,9 +491,17 @@ pub fn decode_model_asm(sarc_bytes: &[u8], rtpc_bytes: Option<&[u8]>, sel: PartS
     Ok(out)
 }
 
-/// Map each `.modelc` material Name → its diffuse `.ddsc` path (`_dif`/`_diff`/`albedo`, skipping dummies).
-/// Submeshes bind to materials by name (`SubMeshId`).
-fn material_diffuse_map(bytes: &[u8]) -> std::collections::HashMap<String, String> {
+/// Rotate a normal by a transform's 3×3 (no translation), renormalized.
+fn xform_normal(m: &[f32; 16], n: [f32; 3]) -> [f32; 3] {
+    let r = [n[0] * m[0] + n[1] * m[4] + n[2] * m[8], n[0] * m[1] + n[1] * m[5] + n[2] * m[9], n[0] * m[2] + n[1] * m[6] + n[2] * m[10]];
+    let l = (r[0] * r[0] + r[1] * r[1] + r[2] * r[2]).sqrt();
+    if l > 1e-9 { [r[0] / l, r[1] / l, r[2] / l] } else { n }
+}
+
+/// A material's CarPaint texture set (paths).
+struct MatTex { dif: Option<String>, nrm: Option<String>, mpm: Option<String> }
+/// Map each `.modelc` material Name → its `_dif`/`_nrm`/`_mpm` texture paths. Submeshes bind by `SubMeshId`.
+fn material_textures_map(bytes: &[u8]) -> std::collections::HashMap<String, MatTex> {
     let mut out = std::collections::HashMap::new();
     let v = match adf::parse(bytes.to_vec()) { Ok(a) => a.decode_instances(), Err(_) => return out };
     fn find_mats(v: &Value) -> Option<&Vec<Value>> {
@@ -456,13 +518,17 @@ fn material_diffuse_map(bytes: &[u8]) -> std::collections::HashMap<String, Strin
         for mat in mats {
             let name = mat.get("Name").and_then(|n| n.as_str()).unwrap_or("");
             if name.is_empty() { continue; }
-            let dif = mat.get("Textures").and_then(|t| t.as_array()).and_then(|texs| {
-                texs.iter().filter_map(|t| t.as_str()).find(|s| {
-                    let l = s.to_ascii_lowercase();
-                    l.ends_with(".ddsc") && !l.contains("dummy") && (l.contains("_dif") || l.contains("_diff") || l.contains("albedo"))
-                }).map(|s| s.to_string())
+            let texs: Vec<String> = mat.get("Textures").and_then(|t| t.as_array())
+                .map(|a| a.iter().filter_map(|t| t.as_str().map(|s| s.to_string())).collect()).unwrap_or_default();
+            let pick = |keys: &[&str]| texs.iter().find(|s| {
+                let l = s.to_ascii_lowercase();
+                l.ends_with(".ddsc") && !l.contains("dummy") && keys.iter().any(|k| l.contains(k))
+            }).cloned();
+            out.insert(name.to_string(), MatTex {
+                dif: pick(&["_dif", "_diff", "albedo"]),
+                nrm: pick(&["_nrm", "_normal"]),
+                mpm: pick(&["_mpm"]),
             });
-            if let Some(d) = dif { out.insert(name.to_string(), d); }
         }
     }
     out
