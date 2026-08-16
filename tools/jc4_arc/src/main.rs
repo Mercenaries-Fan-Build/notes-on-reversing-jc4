@@ -6,7 +6,7 @@ use std::io::{Seek, SeekFrom, Write};
 
 use jc4_formats::hash::hashlittle;
 use jc4_formats::oodle::Oodle;
-use jc4_formats::tab::{decode_entry, default_oodle_dll, magic_ext, parse_tab};
+use jc4_formats::tab::{decode_entry, oodle_dll_from_env, magic_ext, parse_tab};
 
 fn cmd_header(tab: &str) {
     let b = std::fs::read(tab).unwrap();
@@ -300,7 +300,7 @@ fn main() {
             let limit = a.get(5).filter(|s| !s.starts_with("--")).and_then(|s| s.parse().ok()).unwrap_or(usize::MAX);
             let fl = a.iter().position(|s| s == "--filelist").and_then(|i| a.get(i + 1)).map(|p| load_filelist_map(p));
             let msub = a.iter().position(|s| s == "--match").and_then(|i| a.get(i + 1)).cloned();
-            cmd_extract(&a[2], &a[3], &a[4], limit, &default_oodle_dll(), fl.as_ref(), msub.as_deref());
+            cmd_extract(&a[2], &a[3], &a[4], limit, &oodle_dll_from_env(), fl.as_ref(), msub.as_deref());
         }
         other => eprintln!("unknown command {other}"),
     }
