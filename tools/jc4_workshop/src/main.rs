@@ -184,6 +184,8 @@ struct Workshop {
     status: String,
     oodle_dll: String,
     oodle: Option<Oodle>,
+    tex: Option<egui::TextureHandle>,          // uploaded preview texture (current selection)
+    tex_pending: Option<egui::ColorImage>,     // decoded RGBA awaiting upload (needs ctx, done in update)
 }
 
 fn basename(s: &str) -> &str { s.rsplit(['/', '\\']).next().unwrap_or(s) }
@@ -250,6 +252,17 @@ impl Workshop {
             Ok(d) => d, Err(e) => { self.preview = Some(Preview::Error(format!("decode: {e}"))); return; }
         };
         self.preview = Some(build_preview(&data, path_ext));
+        // for a texture, decode the best inline mip to RGBA now (upload happens in update, needs ctx)
+        self.tex = None;
+        self.tex_pending = None;
+        if matches!(self.preview, Some(Preview::Texture(_))) {
+            if let Ok(mip) = avtx::best_inline_mip(&data) {
+                match avtx::decode_rgba(&mip) {
+                    Ok(rgba) => self.tex_pending = Some(egui::ColorImage::from_rgba_unmultiplied([mip.width as usize, mip.height as usize], &rgba)),
+                    Err(e) => self.status = format!("texture decode: {e}"),
+                }
+            }
+        }
     }
 }
 
@@ -565,6 +578,10 @@ impl Workshop {
                 if let Some(i) = pick { self.select(i); }
             });
         if let Some(p) = switch { self.open_archive(p); }
+        // upload a freshly-decoded texture (ctx available here)
+        if let Some(img) = self.tex_pending.take() {
+            self.tex = Some(ctx.load_texture("preview_tex", img, egui::TextureOptions::LINEAR));
+        }
 
         // inspector
         egui::SidePanel::right("insp").default_width(372.0).frame(egui::Frame::none().fill(G1).inner_margin(13.0))
@@ -578,7 +595,7 @@ impl Workshop {
                 Some(Preview::Texture(t)) => t.dims.clone(),
                 _ => None,
             };
-            viewport(ui, dims.as_ref(), self.sel_kind);
+            viewport(ui, dims.as_ref(), self.sel_kind, self.tex.as_ref());
         });
     }
 
@@ -741,17 +758,52 @@ fn setting_row(ui: &mut egui::Ui, label: &str, value: &str, ok: bool) {
 }
 
 /// Render surface — STUB. The wgpu paint callback that uploads a texture mip / draws a model goes here.
-fn viewport(ui: &mut egui::Ui, dims: Option<&(u32, u32, String)>, kind: Option<Kind>) {
+fn viewport(ui: &mut egui::Ui, dims: Option<&(u32, u32, String)>, kind: Option<Kind>, tex: Option<&egui::TextureHandle>) {
     let rect = ui.available_rect_before_wrap();
     let p = ui.painter();
     p.rect_filled(rect, 0.0, G0);
     let inner = rect.shrink(14.0);
     p.rect(inner, 6.0, Color32::from_rgb(0x10, 0x18, 0x1e), Stroke::new(1.5, LINE));
+
+    // textured: paint the mip fit-to-frame over an alpha checkerboard
+    if let (Some(Kind::Texture), Some(t)) = (kind, tex) {
+        let sz = t.size();
+        let (iw, ih) = (sz[0] as f32, sz[1] as f32);
+        let avail = inner.shrink(16.0);
+        let scale = (avail.width() / iw).min(avail.height() / ih); // fit, preserve aspect (may upscale small mips)
+        let draw = egui::vec2(iw * scale, ih * scale);
+        let img_rect = egui::Rect::from_center_size(inner.center(), draw);
+        checkerboard(&p, img_rect);
+        p.image(t.id(), img_rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
+        p.rect_stroke(img_rect, 0.0, Stroke::new(1.0, LINE2));
+        p.text(inner.left_top() + egui::vec2(11.0, 13.0), egui::Align2::LEFT_CENTER, "TEXTURE", egui::FontId::proportional(10.0), VOLT);
+        if let Some((w, h, f)) = dims {
+            p.text(inner.right_top() + egui::vec2(-11.0, 13.0), egui::Align2::RIGHT_CENTER, format!("{w}×{h} · {f}"), egui::FontId::monospace(10.0), DIM);
+        }
+        return;
+    }
+
     let msg = match (kind, dims) {
-        (Some(Kind::Texture), Some((w, h, f))) => format!("◍  render viewport — not wired yet\n{w}×{h} · {f}\n(next: wgpu upload of the mip)"),
+        (Some(Kind::Texture), _) => "◍  texture — no renderable inline mip\n(base mip may be external hi-res, or an HDR format)".to_string(),
         (Some(Kind::Model), _) => "◍  model viewport — not wired yet\n(next: AMF geometry decode → mesh render)".to_string(),
         _ => "◍  render viewport — not wired yet".to_string(),
     };
     p.text(inner.center(), egui::Align2::CENTER_CENTER, msg, egui::FontId::monospace(13.0), FAINT);
     p.text(inner.left_top() + egui::vec2(11.0, 13.0), egui::Align2::LEFT_CENTER, "RENDER · PENDING", egui::FontId::proportional(10.0), INFO);
+}
+
+/// Alpha checkerboard behind a (possibly transparent) texture, clipped to `rect`.
+fn checkerboard(p: &egui::Painter, rect: egui::Rect) {
+    const C: f32 = 9.0;
+    let (a, b) = (Color32::from_rgb(0x1a, 0x22, 0x29), Color32::from_rgb(0x12, 0x18, 0x1e));
+    p.rect_filled(rect, 0.0, b);
+    let (cols, rows) = ((rect.width() / C).ceil() as i32, (rect.height() / C).ceil() as i32);
+    for y in 0..rows {
+        for x in 0..cols {
+            if (x + y) % 2 != 0 { continue; }
+            let min = rect.min + egui::vec2(x as f32 * C, y as f32 * C);
+            let cell = egui::Rect::from_min_size(min, egui::vec2(C, C)).intersect(rect);
+            p.rect_filled(cell, 0.0, a);
+        }
+    }
 }
