@@ -19,7 +19,7 @@ Status: ✅ documented · ◻ pending · 🔶 partial (covered inside another do
 |---|---|---|
 | behavior_system.md | Condition VM + action graph + the lookup3 type registry | ✅ |
 | entity_core_ecs.md | `CGameObjectManager`, `CTransformComponent`, `CInspectableComponent`, `CConditionalManager`, `CActionTokenManager`, entity/component lifecycle, the reflection/type registry spine | ✅ |
-| event_scheduler.md | `CGameplayEventManager` (event bus), `CBinaryStateObjectManager`, `CTimestampManager`, scheduler/tick, `CSettingsManager` | ◻ |
+| event_scheduler.md | `CGameplayEventManager` (event bus), `CBinaryStateObjectManager`, `CTimestampManager`, scheduler/tick, `CSettingsManager` | ✅ |
 
 ## Pillar 2 — Rendering & graphics
 | Doc | Systems / anchor classes | Status |
@@ -37,8 +37,8 @@ Status: ✅ documented · ◻ pending · 🔶 partial (covered inside another do
 | Doc | Systems / anchor classes | Status |
 |---|---|---|
 | world_streaming_terrain.md | `CResourceLoaderManager`, world streaming, `CLandscapeManager`, `CBiomeManager`, `CGameObjectManager` (spawn side), `CDiscoveryManager`, `CCoverageManager` | ✅ |
-| roads_rivers_water.md | `CRoadManager`, `COnRoadService`, `CRiverManager`, water rendering/simulation | ◻ |
-| spawning_population.md | `CSpawnSystem`, `CPlayerSpawnPointManager`, population/traffic spawning | ◻ |
+| roads_rivers_water.md | `CRoadManager`, `COnRoadService`, `CRiverManager`, water rendering/simulation | ✅ |
+| spawning_population.md | `CSpawnSystem`, `CPlayerSpawnPointManager`, population/traffic spawning | ✅ |
 
 ## Pillar 5 — Physics
 | Doc | Systems / anchor classes | Status |
@@ -51,7 +51,7 @@ Status: ✅ documented · ◻ pending · 🔶 partial (covered inside another do
 |---|---|---|
 | ai_combat_encounters.md | `CAiSystem`, `CCombatCoordinator`, `CEncounterManager`, `CEncounterEngagedController`, `CTacticalNodeManager`, `CTargetSystem` | ✅ |
 | characters_creatures.md | `CCharacterManager`, `CCreatureManager`, `CPlayerManager`, character controller, NPC roles | ✅ |
-| road_graph_driving.md | AI vehicle driving on the road graph (`CRoadManager` consumer side) | ◻ |
+| _(merged into roads_rivers_water.md)_ | AI vehicle driving on the road graph | ✅ |
 
 ## Pillar 7 — The Demon antagonist (endgame/DLC)
 | Doc | Systems / anchor classes | Status |
@@ -67,8 +67,8 @@ Status: ✅ documented · ◻ pending · 🔶 partial (covered inside another do
 | Doc | Systems / anchor classes | Status |
 |---|---|---|
 | missions_progression.md | quest/objective managers, supply, collection, statistic, DLC gating | ✅ |
-| objectives_operations.md | `CMissionManager`, `CObjectiveManager`, `CObjectiveContentManager`, `CObjectiveVehicleController`, `CObjectiveCharacterController`, `COperationManager` (story ops) | 🔶 |
-| challenges_stunts.md | `CDaredevilPointManager`, `CJustRunManager`, `CChallengeManager`, stunt/leaderboard feats | ◻ |
+| objectives_operations.md | `CMissionManager`, `CObjectiveManager`, `CObjectiveContentManager`, `CObjectiveVehicleController`, `CObjectiveCharacterController`, `COperationManager` (story ops) | ✅ |
+| challenges_stunts.md | `CDaredevilPointManager`, `CJustRunManager`, `CChallengeManager`, stunt/leaderboard feats | ✅ |
 
 ## Pillar 10 — Player, traversal, camera & input
 | Doc | Systems / anchor classes | Status |
@@ -81,7 +81,7 @@ Status: ✅ documented · ◻ pending · 🔶 partial (covered inside another do
 | Doc | Systems / anchor classes | Status |
 |---|---|---|
 | vehicles.md | driving, entry/exit/hijack, vehicle winch, driving-force registry | ✅ |
-| vehicle_data_pilots.md | `CVehicleDataManager`, `CPilotDataManager`, `CObjectiveVehicleController` | 🔶 |
+| vehicle_data_pilots.md | `CVehicleDataManager`, `CPilotDataManager`, `CObjectiveVehicleController` | ✅ |
 
 ## Pillar 12 — Weapons & combat items
 | Doc | Systems / anchor classes | Status |
@@ -107,12 +107,12 @@ Status: ✅ documented · ◻ pending · 🔶 partial (covered inside another do
 ## Pillar 16 — Narrative, cutscene & media
 | Doc | Systems / anchor classes | Status |
 |---|---|---|
-| narrative_cutscene_media.md | `CCutsceneManager`, `CDialogueChain`, `CMediaRevolutionManager` (in-world propaganda/news), `CContentIntroductionManager`, `CVideoManager`, `CVideoRecordingManager` | ◻ |
+| narrative_cutscene_media.md | `CCutsceneManager`, `CDialogueChain`, `CMediaRevolutionManager` (in-world propaganda/news), `CContentIntroductionManager`, `CVideoManager`, `CVideoRecordingManager` | ✅ |
 
 ## Pillar 17 — Online, platform & social
 | Doc | Systems / anchor classes | Status |
 |---|---|---|
-| online_platform_social.md | `COnlineSuiteManager`, `COnlinePlatformSystem`, `COnlineFeatureManager`, `CLeaderboardManager`, `CFriendManager`, `CPresenceManager`, `CProfileManager`, `CAchievementsManager`, `CPlayerReportingManager`, `CPlatformController` | ◻ |
+| online_platform_social.md | `COnlineSuiteManager`, `COnlinePlatformSystem`, `COnlineFeatureManager`, `CLeaderboardManager`, `CFriendManager`, `CPresenceManager`, `CProfileManager`, `CAchievementsManager`, `CPlayerReportingManager`, `CPlatformController` | ✅ |
 
 ## Pillar 18 — Effects & particles
 | Doc | Systems / anchor classes | Status |
@@ -122,8 +122,18 @@ Status: ✅ documented · ◻ pending · 🔶 partial (covered inside another do
 ---
 
 ### Coverage
-- **Documented (✅):** 8 — behavior_system, grappling_hook, traversal_movement, vehicles, weapons, destruction, wind_and_weather, missions_progression.
-- **Pending (◻/🔶):** ~30 systems across the 18 pillars above.
+- **Documented (✅): all 34 system docs across the 18 pillars** — produced in three waves of parallel
+  decomp-mining agents (2026-08-16). Every claim graded `proven|inferred|speculative` and `FUN_`-cited.
+- **Pending: 0.** Remaining depth lives *inside* the docs as tagged open questions — almost all of the same
+  kind: per-component tick bodies and tunable magnitudes behind data-section vtables → the **data-side pass**
+  (decode the RTPC/ADF/tagfile values the code names, via `jc4_adf` / `.epe` property tables / live x64dbg).
 
-Docs are produced in **waves** of parallel decomp-mining agents (see `README.md` methodology). Update the
-status column as each lands.
+The 34 docs, by pillar: engine-core (behavior_system, entity_core_ecs, event_scheduler); rendering
+(rendering_graphics, lighting_shadows, environment_tod); weather (wind_and_weather); world
+(world_streaming_terrain, roads_rivers_water, spawning_population); physics (physics_constraints,
+destruction); AI (ai_combat_encounters, characters_creatures); demon (demon_system); metagame
+(faction_frontline_chaos); missions (missions_progression, objectives_operations, challenges_stunts); player
+(grappling_hook, traversal_movement, camera_input); vehicles (vehicles, vehicle_data_pilots); weapons
+(weapons, weapon_gadget_components); progression (progression_economy); audio (audio_dialogue); UI
+(ui_hud_menus); narrative (narrative_cutscene_media); online (online_platform_social); effects
+(effects_particles).

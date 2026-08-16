@@ -108,12 +108,39 @@ this is the most important structural finding of the first pass:
   (`GrapplingHook`, `ReelInKick`, `CForcePulse`, the ~120-entry vehicle driving registry) whose values are
   data-side. This is the natural bridge to the next pass.
 
+## Middleware ledger (proven, from the docs)
+
+The digs pinned JC4's third-party stack from surviving vendor strings — useful lineage/interop reference:
+
+| Domain | Middleware | Evidence |
+|---|---|---|
+| Physics / destruction | **Havok** `hknp` 2016.1.0.4, anim 2016.1.0.3, `hknd` NDivision, AI 2016.1.0.6 | vendor source paths (physics_constraints, destruction, roads_rivers_water) |
+| Audio | **FMOD** (+ in-house KG DSP plugins) | `*.fmod_bankc`, `KG*fmod.cpp` (audio_dialogue) |
+| UI / front-end | **Autodesk Scaleform GFx 4.x** on D3D11 | `Scaleform::Render::D3D1x`, `scaleform.gfx.*` (ui_hud_menus) |
+| Ocean water | **NVIDIA WaveWorks** + Gerstner | `GFSDK_WaveWorks_*`, `nvwaveworks_mod` (roads_rivers_water) |
+| Sky | **Bruneton** precomputed atmospheric scattering | Earth radii 6360/6440 km, Rayleigh/Mie scale-heights (environment_tod) |
+| Video | **Bink** via Scaleform | middleware table `FUN_14a61a6f0`, YUV upload (narrative_cutscene_media) |
+| Online / backend | **Square Enix Online Suite v6** (`osdk::`) + Steam | build `onlinesuitev6-6.1.0.2…`, `jc4v6.os.eidos.com` (online_platform_social) |
+
 ## Status
 
-Survey + all eight per-system deep dives written 2026-08-16 by parallel decomp-mining agents, every claim
-graded and `FUN_`-cited. The corpus MCP server is currently pointed at the Mercs2 project (not indexed for
-JC4) — these docs work **directly against the decomp text dump** above.
+**Complete: the survey + all 34 per-system deep dives, written 2026-08-16 by three waves of parallel
+decomp-mining agents.** Every claim graded and `FUN_`-cited; see `SYSTEMS_INVENTORY.md` for the full pillar
+map. The corpus MCP server is currently pointed at the Mercs2 project (not indexed for JC4) — these docs work
+**directly against the decomp text dump** above.
 
-**Next pass (data-side):** the open questions across the docs converge on the same thing — resolve the
-force/damage/tunable *values* by decoding the RTPC entity components and ADF configs the code names (tie each
-`CConditional_*` / component class here to its entity component hash in `[[rtpc-entity-assembly]]`).
+What emerged, repeatedly, is that the systems are not independent — they ride shared spines the docs kept
+re-discovering from different angles:
+- the **lookup3 name→type registry** (`FUN_140f27f60`) + three registrars — every system's classes are rows
+  in one of these tables (entity_core_ecs, behavior_system);
+- the **event bus** (`CGameplayEventManager`, deferred once-per-frame ring) — how weather, audio, missions,
+  UI all talk (event_scheduler);
+- the **external-force bus** (`FUN_1416d3380` Collect→Merge→Apply) — the single sink for grapple, winch,
+  wind, buoyancy and explosion forces (physics_constraints);
+- the **~93-manager service locator** pumped in fixed order each frame (event_scheduler).
+
+**Next pass (data-side).** The open questions across all 34 docs converge on one kind of gap: the executable
+holds the *mechanism*, but the *magnitudes* (forces, damage, radii, timers, thresholds) live in RTPC/ADF/Havok
+tagfile **data** behind data-section vtables. Resolving them is one coherent effort — decode the entity
+components and configs the code names, tying each `CConditional_*` / component class here to its entity
+component hash in `[[rtpc-entity-assembly]]` (via `jc4_adf`, `.epe` property tables, or a live x64dbg pass).
