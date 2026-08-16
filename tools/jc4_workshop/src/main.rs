@@ -369,8 +369,24 @@ impl Workshop {
         self.mesh = None;
         self.model_tex = None; // invalidate the cached render
         if matches!(self.preview, Some(Preview::Model { .. })) {
-            // merge ALL mesh parts (they share a common object space) → the full assembled model
-            if let Ok(m) = amf::decode_model(&data) { self.mesh = Some(m); self.orbit = (0.7, 0.35); }
+            // resolve the entity blueprint (.epe RTPC) referenced by the SARC → faithful part selection
+            let mut epe: Option<Vec<u8>> = None;
+            if let Ok(members) = sarc::parse(&data) {
+                if let Some(path) = members.iter().find(|m| m.name.ends_with(".epe")).map(|m| m.name.clone()) {
+                    let h = hashlittle(path.as_bytes(), 0);
+                    if let Some(arc) = self.archive.as_ref() {
+                        if let Some(entry) = arc.tab.entries.iter().find(|e| e.name_hash == h).copied() {
+                            if let Ok(mut f) = File::open(&arc.arc_path) {
+                                epe = tab::decode_entry(&mut f, &arc.tab, &entry, &self.oodle_dll, &mut self.oodle).ok();
+                            }
+                        }
+                    }
+                }
+            }
+            // faithful assembly: render exactly the entity's declared parts, placed by their world transform.
+            // Fall back to the all-parts merge if the blueprint is missing or matches nothing.
+            let m = amf::decode_model_asm(&data, epe.as_deref()).or_else(|_| amf::decode_model(&data));
+            if let Ok(m) = m { self.mesh = Some(m); self.orbit = (0.7, 0.35); }
         }
     }
 }
