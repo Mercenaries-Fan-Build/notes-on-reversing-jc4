@@ -24,7 +24,7 @@ Status: ✅ documented · ◻ pending · 🔶 partial (covered inside another do
 ## Pillar 2 — Rendering & graphics
 | Doc | Systems / anchor classes | Status |
 |---|---|---|
-| rendering_graphics.md | `CRenderBlock*` shader family (General/Character/CarPaint/Bark/Hologram/EnergyShield/DemonDome/DemonOrganic/Weather), `CModelInstanceManager`, `CMeshEffectManager`, `ChromaManager`, deferred/HDR/bloom/SSR (`CompositeBloom`, `Checkerboard*HDR`, `CompositeScreenSpaceReflection*`), occlusion | ◻ |
+| rendering_graphics.md | `CRenderBlock*` shader family (General/Character/CarPaint/Bark/Hologram/EnergyShield/DemonDome/DemonOrganic/Weather), `CModelInstanceManager`, `CMeshEffectManager`, `ChromaManager`, deferred/HDR/bloom/SSR (`CompositeBloom`, `Checkerboard*HDR`, `CompositeScreenSpaceReflection*`), occlusion | ✅ |
 | lighting_shadows.md | lighting, shadow pipeline (cloud shadows, `CarPaintShadow*`, `CharacterDepthShadow*`), `CSpotlightController`, `CLightOcclusionPlaneObject` | ◻ |
 | environment_tod.md | `CTimeOfDayController`, `CEnvironmentGfxManager`, `CEnvironmentGraphicsModifierManager`, sky/atmosphere, weather GPU fluid sim (`FUN_1401f7f70`, Navier-Stokes compute) | ◻ |
 
@@ -36,32 +36,32 @@ Status: ✅ documented · ◻ pending · 🔶 partial (covered inside another do
 ## Pillar 4 — World, streaming & terrain
 | Doc | Systems / anchor classes | Status |
 |---|---|---|
-| world_streaming_terrain.md | `CResourceLoaderManager`, world streaming, `CLandscapeManager`, `CBiomeManager`, `CGameObjectManager` (spawn side), `CDiscoveryManager`, `CCoverageManager` | ◻ |
+| world_streaming_terrain.md | `CResourceLoaderManager`, world streaming, `CLandscapeManager`, `CBiomeManager`, `CGameObjectManager` (spawn side), `CDiscoveryManager`, `CCoverageManager` | ✅ |
 | roads_rivers_water.md | `CRoadManager`, `COnRoadService`, `CRiverManager`, water rendering/simulation | ◻ |
 | spawning_population.md | `CSpawnSystem`, `CPlayerSpawnPointManager`, population/traffic spawning | ◻ |
 
 ## Pillar 5 — Physics
 | Doc | Systems / anchor classes | Status |
 |---|---|---|
-| physics_constraints.md | `CPhysicsSystem`, `CPhysicalRestraintsSystem`, `CConstraintFactory`, ragdoll, external force generators, `CPfxBodyPropsSystem` | ◻ |
+| physics_constraints.md | `CPhysicsSystem`, `CPhysicalRestraintsSystem`, `CConstraintFactory`, ragdoll, external force generators, `CPfxBodyPropsSystem` | ✅ |
 | destruction.md | Havok NDivision destruction, chaos objects, force pulse | ✅ |
 
 ## Pillar 6 — AI, combat & encounters
 | Doc | Systems / anchor classes | Status |
 |---|---|---|
-| ai_combat_encounters.md | `CAiSystem`, `CCombatCoordinator`, `CEncounterManager`, `CEncounterEngagedController`, `CTacticalNodeManager`, `CTargetSystem` | ◻ |
+| ai_combat_encounters.md | `CAiSystem`, `CCombatCoordinator`, `CEncounterManager`, `CEncounterEngagedController`, `CTacticalNodeManager`, `CTargetSystem` | ✅ |
 | characters_creatures.md | `CCharacterManager`, `CCreatureManager`, `CPlayerManager`, character controller, NPC roles | ◻ |
 | road_graph_driving.md | AI vehicle driving on the road graph (`CRoadManager` consumer side) | ◻ |
 
 ## Pillar 7 — The Demon antagonist (endgame/DLC)
 | Doc | Systems / anchor classes | Status |
 |---|---|---|
-| demon_system.md | `CDemonAreaManager`, `CDemonWaveSpawner`, `CDemon*StateObject`, `CDemonChaosCluster`, `CDemonCoreStateObject`, possession mechanics (`CDemonHasPossessedCharacter`, `…PossessionTarget`), flying/movement blend states, `CDemonDome`/`DemonOrganic` render, `CDemoniosOutroStateController` | ◻ |
+| demon_system.md | `CDemonAreaManager`, `CDemonWaveSpawner`, `CDemon*StateObject`, `CDemonChaosCluster`, `CDemonCoreStateObject`, possession mechanics (`CDemonHasPossessedCharacter`, `…PossessionTarget`), flying/movement blend states, `CDemonDome`/`DemonOrganic` render, `CDemoniosOutroStateController` | ✅ |
 
 ## Pillar 8 — Faction / Frontline / Chaos metagame (JC4 core loop)
 | Doc | Systems / anchor classes | Status |
 |---|---|---|
-| faction_frontline_chaos.md | `CFrontlineManager`, `CFrontlineConnection`, `CFrontlineEventRouter`, `CAgencyBaseManager`, `CAgencyRing(Group)`, `CChaosReward`, `CBookmarkChaosDescription`, conditions (`IsNearActiveFrontline`, `IsInSecuredTerritory`, `HasEnoughChaos`, `FactionStatus`, `DemonDomePercentage`), `CHeatManager` (wanted), `CDiscoveryManager` | ◻ |
+| faction_frontline_chaos.md | `CFrontlineManager`, `CFrontlineConnection`, `CFrontlineEventRouter`, `CAgencyBaseManager`, `CAgencyRing(Group)`, `CChaosReward`, `CBookmarkChaosDescription`, conditions (`IsNearActiveFrontline`, `IsInSecuredTerritory`, `HasEnoughChaos`, `FactionStatus`, `DemonDomePercentage`), `CHeatManager` (wanted), `CDiscoveryManager` | ✅ |
 
 ## Pillar 9 — Missions, objectives & activities
 | Doc | Systems / anchor classes | Status |
@@ -97,12 +97,12 @@ Status: ✅ documented · ◻ pending · 🔶 partial (covered inside another do
 ## Pillar 14 — Audio & dialogue
 | Doc | Systems / anchor classes | Status |
 |---|---|---|
-| audio_dialogue.md | `CSoundSystem`, `CRadioSystem`, `CVocalsManager`, `CDialogueManager`, `CDialogueCoordinator`, `CDialogueChain`, sound occlusion volumes (`CSoundOcclusion*`) | ◻ |
+| audio_dialogue.md | `CSoundSystem`, `CRadioSystem`, `CVocalsManager`, `CDialogueManager`, `CDialogueCoordinator`, `CDialogueChain`, sound occlusion volumes (`CSoundOcclusion*`) | ✅ |
 
 ## Pillar 15 — UI, HUD & menus
 | Doc | Systems / anchor classes | Status |
 |---|---|---|
-| ui_hud_menus.md | `CUIManager`, `CUIController`, `CHUDUI`, `CNotificationManager`, `CButtonHintManager`, `CTutorialManager`, `CGPSController`, `CHealthbarComponent`, `COutline`, Scaleform (`.gfx`/CFX) | ◻ |
+| ui_hud_menus.md | `CUIManager`, `CUIController`, `CHUDUI`, `CNotificationManager`, `CButtonHintManager`, `CTutorialManager`, `CGPSController`, `CHealthbarComponent`, `COutline`, Scaleform (`.gfx`/CFX) | ✅ |
 
 ## Pillar 16 — Narrative, cutscene & media
 | Doc | Systems / anchor classes | Status |
