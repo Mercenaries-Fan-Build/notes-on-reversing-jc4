@@ -357,6 +357,12 @@ fn resolve_model_textures(sarc: &[u8], mesh: &jc4_formats::amf::Mesh, game_dir: 
             let hm = bytes.get(&hmddsc_of(d)).map(|v| v.as_slice());
             avtx::decode_rgba_from(dd, hm).ok()
         }).map(|(w, h, rgba)| amf::Texture { w: w as usize, h: h as usize, rgba });
+        if tex.is_none() { eprintln!("  tex MISSING {d}"); }
+        if let (Ok(dir), Some(t)) = (std::env::var("JC4_TEXDUMP"), &tex) {
+            let name = d.rsplit('/').next().unwrap_or("t").trim_end_matches(".ddsc");
+            let _ = std::fs::create_dir_all(&dir);
+            let _ = std::fs::write(format!("{dir}/{name}.png"), jc4_formats::amf::to_png_rgba(t.w, t.h, &t.rgba));
+        }
         idx.insert(d.clone(), tex.map(|t| { pool.push(t); pool.len() - 1 }));
     }
     let sub = mesh.submeshes.iter().map(|s| s.diffuse.as_ref().and_then(|p| idx.get(p).copied().flatten())).collect();
@@ -519,9 +525,21 @@ fn main() {
                         let yaw = a.iter().position(|s| s == "--yaw").and_then(|i| a.get(i + 1)).and_then(|s| s.parse().ok()).unwrap_or(0.7);
                         let pitch = a.iter().position(|s| s == "--pitch").and_then(|i| a.get(i + 1)).and_then(|s| s.parse().ok()).unwrap_or(0.3);
                         let game = a.iter().position(|s| s == "--game").and_then(|i| a.get(i + 1)).map(|s| s.as_str());
-                        let (pool, sub) = resolve_model_textures(&b, &m, game, &oodle_dll_from_env());
+                        let (pool, sub) = if a.iter().any(|s| s == "--uvcheck") {
+                            // synthetic checkerboard on every submesh — clean squares ⇒ UVs are fine
+                            let (tw, th) = (256usize, 256usize);
+                            let mut rgba = vec![0u8; tw * th * 4];
+                            for y in 0..th { for x in 0..tw {
+                                let c = if ((x / 16) + (y / 16)) % 2 == 0 { [230, 60, 60, 255] } else { [240, 240, 240, 255] };
+                                rgba[(y * tw + x) * 4..(y * tw + x) * 4 + 4].copy_from_slice(&c);
+                            }}
+                            (vec![jc4_formats::amf::Texture { w: tw, h: th, rgba }], m.submeshes.iter().map(|_| Some(0)).collect::<Vec<_>>())
+                        } else {
+                            resolve_model_textures(&b, &m, game, &oodle_dll_from_env())
+                        };
                         let ntex = pool.len();
-                        std::fs::write(png, jc4_formats::amf::render_png_tex(&m, 512, yaw, pitch, &pool, &sub)).unwrap();
+                        let size = a.iter().position(|s| s == "--size").and_then(|i| a.get(i + 1)).and_then(|s| s.parse().ok()).unwrap_or(512);
+                        std::fs::write(png, jc4_formats::amf::render_png_tex(&m, size, yaw, pitch, &pool, &sub)).unwrap();
                         println!("merged model: {} verts, {} tris, {ntex} textures -> {png}", m.positions.len(), m.indices.len() / 3);
                     }
                     Err(e) => eprintln!("decode_model: {e}"),
@@ -552,8 +570,10 @@ fn main() {
             };
             match decoded {
                 Ok(m) => {
-                    println!("mesh: {} verts, {} tris  bbox min {:?} max {:?}  (positions within bbox: OK)",
-                        m.positions.len(), m.indices.len() / 3, m.bbox_min, m.bbox_max);
+                    let (mut umin, mut umax, mut vmin, mut vmax) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+                    for uv in &m.uvs { umin = umin.min(uv[0]); umax = umax.max(uv[0]); vmin = vmin.min(uv[1]); vmax = vmax.max(uv[1]); }
+                    println!("mesh: {} verts, {} tris  bbox min {:?} max {:?}  UV u[{:.2},{:.2}] v[{:.2},{:.2}]",
+                        m.positions.len(), m.indices.len() / 3, m.bbox_min, m.bbox_max, umin, umax, vmin, vmax);
                     if let Some(out) = a.get(3).filter(|s| !s.starts_with("--")) {
                         std::fs::write(out, jc4_formats::amf::to_obj(&m)).unwrap();
                         println!("wrote {out}");
