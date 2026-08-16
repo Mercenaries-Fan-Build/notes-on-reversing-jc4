@@ -254,6 +254,9 @@ struct Workshop {
     orbit: (f32, f32),                         // model viewport camera (yaw, pitch)
     model_tex: Option<egui::TextureHandle>,    // z-buffered render of the model (cached)
     model_render: (f32, f32, usize, usize),    // (yaw, pitch, w, h) the cache was rendered at
+    model_src: Option<(Vec<u8>, Option<Vec<u8>>)>, // (sarc, epe) for re-assembly on layer toggle
+    part_sel: amf::PartSel,                    // which model layers to render
+    part_counts: (usize, usize, usize),        // (render, payload, debris) part counts
     highlights: Vec<Highlight>,                // curated + auto-discovered model units (global)
     model_groups: Vec<(&'static str, Vec<usize>)>, // highlights grouped by category (CATEGORY_ORDER)
     strip_kind: Kind,                          // active category-strip tab
@@ -328,6 +331,16 @@ impl Workshop {
         self.model_groups = groups;
     }
 
+    /// Re-assemble the model mesh for the current layer selection (invalidates the cached render).
+    fn reassemble(&mut self) {
+        let m = match &self.model_src {
+            Some((sarc, epe)) => amf::decode_model_asm(sarc, epe.as_deref(), self.part_sel).or_else(|_| amf::decode_model(sarc)),
+            None => return,
+        };
+        self.mesh = m.ok();
+        self.model_tex = None;
+    }
+
     /// Jump to a curated highlight: open its archive (if needed), then select the entry by name hash.
     fn jump(&mut self, archive_label: &str, path: &str) {
         if let Some((_, p)) = self.archives.iter().find(|(l, _)| l == archive_label).cloned() {
@@ -368,6 +381,7 @@ impl Workshop {
         // for a model, decode the most-detailed inline mesh part for the viewport
         self.mesh = None;
         self.model_tex = None; // invalidate the cached render
+        self.model_src = None;
         if matches!(self.preview, Some(Preview::Model { .. })) {
             // resolve the entity blueprint (.epe RTPC) referenced by the SARC → faithful part selection
             let mut epe: Option<Vec<u8>> = None;
@@ -383,10 +397,11 @@ impl Workshop {
                     }
                 }
             }
-            // faithful assembly: render exactly the entity's declared parts, placed by their world transform.
-            // Fall back to the all-parts merge if the blueprint is missing or matches nothing.
-            let m = amf::decode_model_asm(&data, epe.as_deref()).or_else(|_| amf::decode_model(&data));
-            if let Ok(m) = m { self.mesh = Some(m); self.orbit = (0.7, 0.35); }
+            self.part_counts = amf::model_part_counts(&data, epe.as_deref());
+            self.part_sel = amf::PartSel::default();
+            self.orbit = (0.7, 0.35);
+            self.model_src = Some((data.clone(), epe));
+            self.reassemble();
         }
     }
 }
@@ -838,7 +853,21 @@ impl Workshop {
         }
     }
 
-    fn ui_inspector(&self, ui: &mut egui::Ui) {
+    fn ui_inspector(&mut self, ui: &mut egui::Ui) {
+        // model render LAYERS — toggle the vehicle / bundled payload / debris and re-assemble
+        if self.model_src.is_some() {
+            let (r, o, d) = self.part_counts;
+            let mut sel = self.part_sel;
+            let mut changed = false;
+            ui.label(RichText::new("LAYERS").color(DIM).size(9.0).strong());
+            ui.horizontal_wrapped(|ui| {
+                changed |= ui.checkbox(&mut sel.render, format!("Vehicle · {r}")).changed();
+                if o > 0 { changed |= ui.checkbox(&mut sel.other, format!("Payload · {o}")).changed(); }
+                if d > 0 { changed |= ui.checkbox(&mut sel.debris, format!("Debris · {d}")).changed(); }
+            });
+            if changed { self.part_sel = sel; self.reassemble(); }
+            ui.add_space(8.0);
+        }
         match &self.preview {
             None => { ui.add_space(16.0); ui.label(RichText::new("Pick an entry to inspect.").color(FAINT)); }
             Some(Preview::Model { parts }) => {
@@ -848,20 +877,23 @@ impl Workshop {
                     ui.label(RichText::new(format!("archive · {}", self.sel_archive)).monospace().size(10.5).color(FAINT));
                 }
                 ui.add_space(8.0);
-                for p in parts {
-                    card(ui, &p.name, |ui| {
-                        ui.label(RichText::new(format!("{} LOD(s) · factor {:.2}", p.lods, p.lod_factor)).monospace().size(11.5).color(DIM));
-                        if let Some(m) = &p.mesh {
-                            ui.label(RichText::new(format!("{} LOD grp · {} mesh · {} verts · {} idx", m.groups, m.meshes, m.verts, m.indices)).monospace().size(11.5).color(TX));
-                            if !m.hires.is_empty() { ui.label(RichText::new(format!("hi-res: {}", m.hires)).monospace().size(10.5).color(FAINT)); }
-                        }
-                        for mat in &p.materials {
-                            ui.add_space(4.0);
-                            ui.label(RichText::new(format!("{}   [{}]", mat.name, mat.render_block)).size(12.0).color(VOLT));
-                            for t in &mat.textures { ui.label(RichText::new(format!("    {}", t)).monospace().size(10.5).color(DIM)); }
+                egui::CollapsingHeader::new(RichText::new(format!("PARTS · {}", parts.len())).color(DIM).size(10.0).strong())
+                    .default_open(false).show(ui, |ui| {
+                        for p in parts {
+                            card(ui, &p.name, |ui| {
+                                ui.label(RichText::new(format!("{} LOD(s) · factor {:.2}", p.lods, p.lod_factor)).monospace().size(11.5).color(DIM));
+                                if let Some(m) = &p.mesh {
+                                    ui.label(RichText::new(format!("{} LOD grp · {} mesh · {} verts · {} idx", m.groups, m.meshes, m.verts, m.indices)).monospace().size(11.5).color(TX));
+                                    if !m.hires.is_empty() { ui.label(RichText::new(format!("hi-res: {}", m.hires)).monospace().size(10.5).color(FAINT)); }
+                                }
+                                for mat in &p.materials {
+                                    ui.add_space(4.0);
+                                    ui.label(RichText::new(format!("{}   [{}]", mat.name, mat.render_block)).size(12.0).color(VOLT));
+                                    for t in &mat.textures { ui.label(RichText::new(format!("    {}", t)).monospace().size(10.5).color(DIM)); }
+                                }
+                            });
                         }
                     });
-                }
             }
             Some(Preview::Structure(bv)) => {
                 ui.label(RichText::new("STRUCTURE").color(VOLT).size(9.5).strong());
