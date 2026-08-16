@@ -609,7 +609,9 @@ impl Workshop {
 
         // viewport
         egui::CentralPanel::default().frame(egui::Frame::none().fill(G0)).show(ctx, |ui| {
-            if self.sel_kind == Some(Kind::Model) && self.mesh.is_some() {
+            // key off a decoded mesh, not the path-derived Kind: model geometry rides inside `.ee`
+            // (Entity) and SARC entries, so sel_kind is rarely Model even when a mesh is present.
+            if self.mesh.is_some() {
                 self.model_viewport(ui);
             } else {
                 let dims = match &self.preview {
