@@ -375,23 +375,25 @@ impl Workshop {
         self.model_sub_tex = sub_tex;
     }
 
-    /// Decode a diffuse `.ddsc` to an RGBA texture — from a stored SARC member, else fetched from the archive.
+    /// Fetch a resource's bytes — from a stored SARC member, else fetched from the current archive by hash.
+    fn fetch_resource(&mut self, sarc: &[u8], path: &str) -> Option<Vec<u8>> {
+        if let Some(d) = sarc::parse(sarc).ok()
+            .and_then(|ms| ms.iter().find(|m| m.stored && m.name == path).and_then(|m| m.data(sarc).map(|d| d.to_vec()))) {
+            return Some(d);
+        }
+        let h = hashlittle(path.as_bytes(), 0);
+        let arc = self.archive.as_ref()?;
+        let entry = *arc.tab.entries.iter().find(|e| e.name_hash == h)?;
+        let mut f = File::open(&arc.arc_path).ok()?;
+        tab::decode_entry(&mut f, &arc.tab, &entry, &self.oodle_dll, &mut self.oodle).ok()
+    }
+
+    /// Decode a diffuse `.ddsc` to a HI-RES RGBA texture (`.ddsc` header + `.hmddsc` base mip when present).
     fn resolve_texture(&mut self, sarc: &[u8], path: &str) -> Option<amf::Texture> {
-        let stored: Option<Vec<u8>> = sarc::parse(sarc).ok()
-            .and_then(|ms| ms.iter().find(|m| m.stored && m.name == path).and_then(|m| m.data(sarc).map(|d| d.to_vec())));
-        let data = match stored {
-            Some(d) => d,
-            None => {
-                let h = hashlittle(path.as_bytes(), 0);
-                let arc = self.archive.as_ref()?;
-                let entry = *arc.tab.entries.iter().find(|e| e.name_hash == h)?;
-                let mut f = File::open(&arc.arc_path).ok()?;
-                tab::decode_entry(&mut f, &arc.tab, &entry, &self.oodle_dll, &mut self.oodle).ok()?
-            }
-        };
-        let mip = avtx::best_inline_mip(&data).ok()?;
-        let rgba = avtx::decode_rgba(&mip).ok()?;
-        Some(amf::Texture { w: mip.width as usize, h: mip.height as usize, rgba })
+        let ddsc = self.fetch_resource(sarc, path)?;
+        let hm = self.fetch_resource(sarc, &format!("{}.hmddsc", path.trim_end_matches(".ddsc")));
+        let (w, h, rgba) = avtx::decode_rgba_from(&ddsc, hm.as_deref()).ok()?;
+        Some(amf::Texture { w: w as usize, h: h as usize, rgba })
     }
 
     /// Jump to a curated highlight: open its archive (if needed), then select the entry by name hash.
