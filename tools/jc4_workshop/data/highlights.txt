@@ -1,0 +1,12 @@
+# Curated highlights — hand-maintained list surfaced at the top of the navigator so the meaningful
+# UNITS (models/structures/textures/UI) are one click away instead of buried among thousands of hashes.
+# One entry per line, ' | '-separated:   TAG | label | archive_label | resource_path
+#   TAG            display tag/colour (MODEL / TEX / STRUCT / UI / DATA)
+#   archive_label  matches the archive dropdown (path under archives_win64, no extension)
+#   resource_path  full lowercase resource path; it hashes (lookup3) to the entry to select
+# Add freely as we find good examples — this file is compiled into the workshop (edit + rebuild).
+
+MODEL | Dragon rocket launcher | wpn_904_dragon/game0 | dlc/wpn_904_dragon/editor/entities/weapons/01_wielded/wpn_904_dragon/wpn_904_dragon.ee
+MODEL | Agency railgun (Miller) | agency/game0 | dlc/agency/editor/entities/weapons/01_wielded/wpn_100_railgun_miller/wpn_100_railgun_miller.ee
+TEX | Supply-drop icon | boot/game0 | ui/supply_drop.art.supplydrop_cat_sport_vehicle.ddsc
+TEX | Title art | boot/game0 | ui/title_i26.ddsc
