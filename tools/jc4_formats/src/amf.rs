@@ -263,13 +263,43 @@ fn part_xform(base: &str, render: &std::collections::HashMap<String, [f32; 16]>)
     cands.iter().find_map(|c| render.get(c).copied())
 }
 
-pub fn decode_model(sarc_bytes: &[u8]) -> Result<Mesh, String> { decode_model_asm(sarc_bytes, None) }
+/// Which layers of a model to assemble. `render` = the entity's declared render parts (the vehicle);
+/// `other` = bundled parts the blueprint does NOT render (e.g. a spawned payload); `debris` = destruction
+/// fragments. Faithful default: render only.
+#[derive(Clone, Copy)]
+pub struct PartSel { pub render: bool, pub other: bool, pub debris: bool }
+impl Default for PartSel { fn default() -> Self { PartSel { render: true, other: false, debris: false } } }
 
-/// FAITHFUL model assembly. With the entity `.epe` RTPC (`rtpc_bytes`), render EXACTLY the parts the entity
-/// declares (its render-part nodes), each placed by its `world` transform — so bundled-but-separate payloads
-/// (a different class) are correctly excluded and attached parts land at their real offset. Without the RTPC,
-/// fall back to merging all parts (destruction/debris name-gated). Each `.meshc` is hr-paired for high LOD.
-pub fn decode_model_asm(sarc_bytes: &[u8], rtpc_bytes: Option<&[u8]>) -> Result<Mesh, String> {
+#[derive(PartialEq)]
+pub enum PartClass { Render, Other, Debris }
+fn classify(base: &str, render: &Option<std::collections::HashMap<String, [f32; 16]>>) -> (PartClass, [f32; 16]) {
+    if !is_render_part(base) { return (PartClass::Debris, IDENT); }
+    match render {
+        Some(map) => match part_xform(base, map) { Some(t) => (PartClass::Render, t), None => (PartClass::Other, IDENT) },
+        None => (PartClass::Render, IDENT),
+    }
+}
+
+/// Count mesh parts per class `(render, other, debris)` — for the layer toggles.
+pub fn model_part_counts(sarc_bytes: &[u8], rtpc_bytes: Option<&[u8]>) -> (usize, usize, usize) {
+    let render = rtpc_bytes.and_then(|r| crate::rtpc::render_parts(r).ok()).map(|v| v.into_iter().collect());
+    let (mut a, mut b, mut c) = (0, 0, 0);
+    if let Ok(members) = crate::sarc::parse(sarc_bytes) {
+        for m in &members {
+            if !(m.stored && m.name.ends_with(".meshc")) { continue; }
+            let base = m.name.trim_end_matches(".meshc").rsplit('/').next().unwrap_or("").to_ascii_lowercase();
+            match classify(&base, &render).0 { PartClass::Render => a += 1, PartClass::Other => b += 1, PartClass::Debris => c += 1 }
+        }
+    }
+    (a, b, c)
+}
+
+pub fn decode_model(sarc_bytes: &[u8]) -> Result<Mesh, String> { decode_model_asm(sarc_bytes, None, PartSel::default()) }
+
+/// FAITHFUL model assembly. With the entity `.epe` RTPC, render the parts the entity declares (`sel.render`),
+/// each placed by its `world` transform; optionally the bundled payload (`sel.other`) and debris (`sel.debris`).
+/// Without the RTPC, all non-debris parts are treated as render. Each `.meshc` is hr-paired for high LOD.
+pub fn decode_model_asm(sarc_bytes: &[u8], rtpc_bytes: Option<&[u8]>, sel: PartSel) -> Result<Mesh, String> {
     let members = crate::sarc::parse(sarc_bytes)?;
     let render: Option<std::collections::HashMap<String, [f32; 16]>> = rtpc_bytes
         .and_then(|r| crate::rtpc::render_parts(r).ok())
@@ -283,11 +313,9 @@ pub fn decode_model_asm(sarc_bytes: &[u8], rtpc_bytes: Option<&[u8]>) -> Result<
     for m in &members {
         if !(m.stored && m.name.ends_with(".meshc")) { continue; }
         let base = m.name.trim_end_matches(".meshc").rsplit('/').next().unwrap_or("").to_ascii_lowercase();
-        // faithful gate: with the RTPC, keep only declared render parts (excludes the payload); else name-gate debris
-        let tf = match &render {
-            Some(map) => match part_xform(&base, map) { Some(t) => t, None => continue },
-            None => { if !is_render_part(&base) { continue; } IDENT }
-        };
+        let (class, tf) = classify(&base, &render);
+        let want = match class { PartClass::Render => sel.render, PartClass::Other => sel.other, PartClass::Debris => sel.debris };
+        if !want { continue; }
         let d = match m.data(sarc_bytes) { Some(d) => d, None => continue };
         let mesh = match hr.get(m.name.trim_end_matches(".meshc")) {
             Some(h) => decode_mesh_hr(d, h), None => decode_mesh(d),
