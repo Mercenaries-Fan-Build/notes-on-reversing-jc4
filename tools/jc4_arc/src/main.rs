@@ -186,6 +186,73 @@ fn cmd_sarc(path: &str) {
     }
 }
 
+// Model inspector: walk a model SARC → decode each `.modelc` (Avalanche AMF) → resolve its `.meshc`
+// member → print the assembly (LODs, materials + texture slots, mesh vertex/index stats). Uses only
+// SARC + ADF (both proven) + AVTX names — no new crack. The workshop's Model inspector data layer.
+fn basename(s: &str) -> &str { s.rsplit(['/', '\\']).next().unwrap_or(s) }
+
+fn summarize_meshc(data: &[u8]) {
+    let adf = match jc4_formats::adf::parse(data.to_vec()) { Ok(a) => a, Err(_) => return };
+    let v = adf.decode_instances();
+    // the header instance is the one carrying "LodGroups"
+    let hdr = v.as_object().and_then(|o| o.values().find(|iv| iv.get("LodGroups").is_some()));
+    let hdr = match hdr { Some(h) => h, None => return };
+    let lods = hdr.get("LodGroups").and_then(|v| v.as_array());
+    let (mut verts, mut idx, mut meshes) = (0u64, 0u64, 0u64);
+    if let Some(groups) = lods {
+        for g in groups {
+            if let Some(ms) = g.get("Meshes").and_then(|v| v.as_array()) {
+                for m in ms {
+                    meshes += 1;
+                    verts += m.get("VertexCount").and_then(|v| v.as_u64()).unwrap_or(0);
+                    idx += m.get("IndexCount").and_then(|v| v.as_u64()).unwrap_or(0);
+                }
+            }
+        }
+    }
+    println!("    mesh: {} LOD group(s), {} mesh(es), {} verts, {} indices",
+        lods.map(|a| a.len()).unwrap_or(0), meshes, verts, idx);
+    if let Some(hp) = hdr.get("HighLodPath").and_then(|v| v.as_str()) {
+        if !hp.is_empty() { println!("    hi-res: {}", basename(hp)); }
+    }
+}
+
+fn cmd_model(sarc_path: &str) {
+    let b = std::fs::read(sarc_path).unwrap();
+    let members = match jc4_formats::sarc::parse(&b) { Ok(m) => m, Err(e) => { eprintln!("{e}"); return; } };
+    let by_name: HashMap<&str, usize> = members.iter().enumerate().map(|(i, m)| (m.name.as_str(), i)).collect();
+    let modelcs: Vec<&jc4_formats::sarc::SarcEntry> =
+        members.iter().filter(|m| m.stored && m.name.ends_with(".modelc")).collect();
+    println!("# {} model part(s) in {}", modelcs.len(), basename(sarc_path));
+    for mc in modelcs {
+        let adf = match jc4_formats::adf::parse(mc.data(&b).unwrap().to_vec()) { Ok(a) => a, Err(_) => continue };
+        let v = adf.decode_instances();
+        let model = match v.as_object().and_then(|o| o.values().next()) { Some(m) => m, None => continue };
+        println!("\n▸ {}", basename(&mc.name));
+        let lods = model.get("LodSlots").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+        let lf = model.get("LodFactor").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        println!("  {lods} LOD(s), LodFactor {lf}");
+        if let Some(mats) = model.get("Materials").and_then(|v| v.as_array()) {
+            for mat in mats {
+                let name = mat.get("Name").and_then(|v| v.as_str()).unwrap_or("?");
+                let rb = mat.get("RenderBlockId").and_then(|v| v.as_str()).unwrap_or("?");
+                println!("  material '{name}'  [{rb}]");
+                if let Some(texs) = mat.get("Textures").and_then(|v| v.as_array()) {
+                    for t in texs.iter().filter_map(|v| v.as_str()).filter(|t| !t.is_empty() && !t.contains("dummies/")) {
+                        println!("      tex: {}", basename(t));
+                    }
+                }
+            }
+        }
+        if let Some(mp) = model.get("Mesh").and_then(|v| v.as_str()) {
+            match by_name.get(mp).and_then(|&i| members[i].data(&b)) {
+                Some(md) => summarize_meshc(md),
+                None => println!("    mesh: {} (external)", basename(mp)),
+            }
+        }
+    }
+}
+
 fn cmd_hex(tab: &str, n: usize) {
     let b = std::fs::read(tab).unwrap();
     let region = &b[0..n.min(b.len())];
@@ -208,6 +275,7 @@ fn main() {
         eprintln!("  jc4_arc names  <tab> <filelist>                 un-hash entries via a filelist");
         eprintln!("  jc4_arc bundle <resourcebundle>                 list members + summarize a structure");
         eprintln!("  jc4_arc sarc   <sarc/.ee/model>                 list a SARC's grouped member files");
+        eprintln!("  jc4_arc model  <sarc>                           model assembly: LODs/materials/textures/mesh");
         eprintln!("  jc4_arc extract <tab> <arc> <outdir> [limit]    decode payloads (raw/zlib/Oodle)");
         return;
     }
@@ -219,6 +287,7 @@ fn main() {
         "hash" => println!("{:08x}  {:?}", hashlittle(a[2].as_bytes(), 0), a[2]),
         "bundle" => cmd_bundle(&a[2]),
         "sarc" => cmd_sarc(&a[2]),
+        "model" => cmd_model(&a[2]),
         "names" => {
             if a.len() < 4 { eprintln!("usage: jc4_arc names <tab> <filelist>"); return; }
             cmd_names(&a[2], &a[3]);
