@@ -67,15 +67,21 @@ fn main() -> eframe::Result<()> {
         let mut app = Workshop::default();
         app.config = load_config();
         app.highlights = load_highlights();
+        app.build_model_groups();
         app.apply_config();
         Ok(Box::new(app))
     }))
 }
 
 // ── unit taxonomy: classify an entry by its resolved path extension ──────────────────────────────
-#[derive(Clone, Copy, PartialEq)]
-enum Kind { Model, Structure, Entity, Texture, Ui, Data, Other }
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
+enum Kind { #[default] Model, Structure, Entity, Texture, Ui, Data, Other }
 impl Kind {
+    /// Plural strip label for the category selector.
+    fn strip_label(self) -> &'static str {
+        match self { Kind::Model => "MODELS", Kind::Structure => "STRUCTURES", Kind::Entity => "ENTITIES",
+            Kind::Texture => "TEXTURES", Kind::Ui => "UI", Kind::Data => "DATA", Kind::Other => "OTHER" }
+    }
     fn of_path(p: &str) -> Kind {
         let e = p.rsplit('.').next().unwrap_or("");
         match e {
@@ -149,6 +155,37 @@ fn tag_color(tag: &str) -> Color32 {
     match tag { "MODEL" => ACC, "TEX" => VOLT, "STRUCT" => VOLT, "UI" => INFO, _ => DIM }
 }
 
+/// Fine model category from an entity path (naming convention) — the browser's group buckets. This
+/// vocabulary (helicopter/tank/character/weapon/…) doubles as core-string terms for name cracking.
+const CATEGORY_ORDER: &[&str] = &[
+    "Helicopter", "Plane", "Car", "Truck / Van", "Tank / APC", "Motorcycle", "Boat",
+    "Vehicle (other)", "Character", "Weapon", "Prop", "Other",
+];
+fn model_category(path: &str) -> &'static str {
+    let p = path.to_ascii_lowercase();
+    let name = p.rsplit('/').next().unwrap_or(&p);
+    let has = |t: &str| name.contains(t);
+    if p.contains("/vehicles/") {
+        if has("helicopter") || has("heli") || has("chopper") || has("gunship") { "Helicopter" }
+        else if has("plane") || has("jet") || has("aircraft") || has("dirigible") || has("blimp") || has("airship") { "Plane" }
+        else if has("tank") || has("apc") || has("ifv") { "Tank / APC" }
+        else if has("boat") || has("ship") || has("submarine") || has("_sub") || has("hovercraft") || has("jetski") || p.contains("/03_sea/") { "Boat" }
+        else if has("motorcycle") || has("bike") || has("motorbike") { "Motorcycle" }
+        else if has("truck") || has("van") || has("pickup") || has("semi") || has("trailer") || has("lowloader") || has("bus") { "Truck / Van" }
+        else if has("car") || has("racing") || has("muscle") || has("suv") || has("sport") || has("buggy") { "Car" }
+        else { "Vehicle (other)" }
+    } else if p.contains("/characters/") || has("civ_") || has("combatant") || has("enemy") || has("hero") || has("_hum") {
+        "Character"
+    } else if p.contains("/weapons/") || has("wpn_") || has("weapon") {
+        "Weapon"
+    } else if p.contains("physics_toys") || p.contains("/props/") || p.contains("/prop") || p.contains("prototype") {
+        "Prop"
+    } else {
+        "Other"
+    }
+}
+fn category_order(cat: &str) -> usize { CATEGORY_ORDER.iter().position(|c| *c == cat).unwrap_or(usize::MAX) }
+
 /// Config lives in a text file (no hardcoded paths in the binary). Windows: `%APPDATA%\jc4_workshop\config.txt`.
 fn config_path() -> PathBuf {
     let base = std::env::var_os("APPDATA").map(PathBuf::from)
@@ -215,7 +252,11 @@ struct Workshop {
     tex_pending: Option<egui::ColorImage>,     // decoded RGBA awaiting upload (needs ctx, done in update)
     mesh: Option<amf::Mesh>,                   // decoded model geometry (current selection)
     orbit: (f32, f32),                         // model viewport camera (yaw, pitch)
-    highlights: Vec<Highlight>,                // curated navigator shortcuts
+    highlights: Vec<Highlight>,                // curated + auto-discovered model units (global)
+    model_groups: Vec<(&'static str, Vec<usize>)>, // highlights grouped by category (CATEGORY_ORDER)
+    strip_kind: Kind,                          // active category-strip tab
+    collapsed_cats: std::collections::HashSet<&'static str>,
+    sel_archive: String,                       // archive label of the current selection (inspector detail)
 }
 
 fn basename(s: &str) -> &str { s.rsplit(['/', '\\']).next().unwrap_or(s) }
@@ -271,6 +312,20 @@ impl Workshop {
         self.names.get(&e.name_hash).map(|p| basename(p).to_string()).unwrap_or_else(|| format!("{:08x}", e.name_hash))
     }
 
+    /// Group the model highlights (tag MODEL) by `model_category`, ordered by CATEGORY_ORDER — the global
+    /// model browser's buckets. Cross-archive: category is the organizer, archive is just a detail.
+    fn build_model_groups(&mut self) {
+        let mut by_cat: std::collections::HashMap<&'static str, Vec<usize>> = std::collections::HashMap::new();
+        for (i, h) in self.highlights.iter().enumerate() {
+            if h.tag != "MODEL" { continue; }
+            by_cat.entry(model_category(&h.path)).or_default().push(i);
+        }
+        let mut groups: Vec<(&'static str, Vec<usize>)> = by_cat.into_iter().collect();
+        groups.sort_by_key(|(c, _)| category_order(c));
+        for (_, v) in &mut groups { v.sort_by(|&a, &b| self.highlights[a].label.cmp(&self.highlights[b].label)); }
+        self.model_groups = groups;
+    }
+
     /// Jump to a curated highlight: open its archive (if needed), then select the entry by name hash.
     fn jump(&mut self, archive_label: &str, path: &str) {
         if let Some((_, p)) = self.archives.iter().find(|(l, _)| l == archive_label).cloned() {
@@ -285,6 +340,9 @@ impl Workshop {
 
     fn select(&mut self, i: usize) {
         self.selected = Some(i);
+        self.sel_archive = self.archive.as_ref()
+            .and_then(|a| self.archives.iter().find(|(_, p)| *p == a.tab_path).map(|(l, _)| l.clone()))
+            .unwrap_or_default();
         let arc = match &self.archive { Some(a) => a, None => return };
         let entry = arc.tab.entries[i];
         self.sel_kind = Some(self.entry_kind(&entry));
@@ -610,63 +668,106 @@ impl Workshop {
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("filter").color(FAINT).size(10.0));
-                    ui.add(egui::TextEdit::singleline(&mut self.filter).desired_width(f32::INFINITY).hint_text("name or hash"));
+                    ui.add(egui::TextEdit::singleline(&mut self.filter).desired_width(f32::INFINITY).hint_text("search"));
                 });
-                // curated + auto-discovered model units — filtered, scrollable, jump on click
-                if !self.highlights.is_empty() {
-                    let f = self.filter.to_lowercase();
-                    let hv: Vec<usize> = self.highlights.iter().enumerate()
-                        .filter(|(_, h)| f.is_empty() || h.label.to_lowercase().contains(&f) || h.path.to_lowercase().contains(&f))
-                        .map(|(i, _)| i).collect();
-                    ui.add_space(6.0);
-                    egui::CollapsingHeader::new(RichText::new(format!("★ HIGHLIGHTS · {}", hv.len())).color(VOLT).size(11.0).strong())
-                        .default_open(true).show(ui, |ui| {
-                            egui::ScrollArea::vertical().id_salt("hl_scroll").max_height(196.0).auto_shrink([false, false])
-                                .show_rows(ui, 19.0, hv.len(), |ui, range| {
-                                    for row in range {
-                                        let hl = &self.highlights[hv[row]];
-                                        let resp = ui.horizontal(|ui| {
-                                            ui.label(RichText::new(&hl.tag).color(tag_color(&hl.tag)).size(8.0).strong());
-                                            ui.add(egui::Label::new(RichText::new(&hl.label).size(10.5).color(TX)).truncate());
-                                        }).response;
-                                        if ui.interact(resp.rect, egui::Id::new(("hl", hv[row])), egui::Sense::click()).clicked() {
-                                            jump = Some((hl.archive.clone(), hl.path.clone()));
-                                        }
-                                    }
-                                });
-                        });
-                }
-                ui.add_space(6.0);
-                let mut pick = None;
-                match &self.archive {
-                    None => { ui.add_space(12.0); ui.label(RichText::new("No archive open — pick one above, or set the game folder in Settings.").color(FAINT)); }
-                    Some(a) => {
-                        let f = self.filter.to_lowercase();
-                        let visible: Vec<usize> = a.tab.entries.iter().enumerate().filter(|(_, e)| {
-                            if f.is_empty() { return true; }
-                            self.names.get(&e.name_hash).map_or(false, |n| n.to_lowercase().contains(&f))
-                                || format!("{:08x}", e.name_hash).contains(&f)
-                        }).map(|(i, _)| i).collect();
-                        eyebrow(ui, &format!("entries · {}", visible.len()));
-                        ui.add_space(4.0);
-                        let row_h = 20.0;
-                        egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, row_h, visible.len(), |ui, range| {
-                            for row in range {
-                                let i = visible[row];
-                                let e = &a.tab.entries[i];
-                                let (tag, tcol) = self.entry_kind(e).tag();
-                                let sel = self.selected == Some(i);
-                                let resp = ui.horizontal(|ui| {
-                                    ui.label(RichText::new(tag).color(tcol).size(8.5).strong());
-                                    let lbl = RichText::new(self.entry_label(e)).monospace().size(11.5)
-                                        .color(if sel { ACC } else { TX });
-                                    ui.add(egui::Label::new(lbl).truncate())
-                                }).response;
-                                if ui.interact(resp.rect, egui::Id::new(("row", i)), egui::Sense::click()).clicked() { pick = Some(i); }
-                            }
-                        });
+
+                // category strip — MODELS is the GLOBAL discovered set (cross-archive); the other kinds
+                // are the current archive's entries of that kind.
+                ui.add_space(8.0);
+                let mut set_strip: Option<Kind> = None;
+                let mut kc: BTreeMap<String, usize> = BTreeMap::new();
+                if let Some(a) = self.archive.as_ref() {
+                    for e in &a.tab.entries {
+                        let k = self.names.get(&e.name_hash).map(|p| Kind::of_path(p)).unwrap_or(Kind::Other);
+                        *kc.entry(k.strip_label().to_string()).or_insert(0) += 1;
                     }
                 }
+                let model_total: usize = self.model_groups.iter().map(|(_, v)| v.len()).sum();
+                ui.horizontal_wrapped(|ui| {
+                    for k in [Kind::Model, Kind::Texture, Kind::Ui, Kind::Structure, Kind::Data] {
+                        let count = if k == Kind::Model { model_total } else { *kc.get(k.strip_label()).unwrap_or(&0) };
+                        let on = self.strip_kind == k;
+                        let (_, col) = k.tag();
+                        let txt = RichText::new(format!("{} {}", k.strip_label(), count)).size(10.0)
+                            .color(if on { TX } else { DIM }).strong();
+                        let btn = egui::Button::new(txt).fill(if on { G3 } else { G1 })
+                            .stroke(Stroke::new(1.0, if on { col } else { LINE }));
+                        if ui.add(btn).clicked() { set_strip = Some(k); }
+                    }
+                });
+                ui.add_space(6.0);
+
+                let mut pick: Option<usize> = None;
+                let mut toggle_cat: Option<&'static str> = None;
+                let f = self.filter.to_lowercase();
+                if self.strip_kind == Kind::Model {
+                    // GLOBAL categorized model browser — category is the organizer, archive is a detail
+                    enum Disp { Head(&'static str, usize), Item(usize) }
+                    let mut rows: Vec<Disp> = Vec::new();
+                    for (cat, idxs) in &self.model_groups {
+                        let matched: Vec<usize> = idxs.iter().copied()
+                            .filter(|&i| f.is_empty() || self.highlights[i].label.to_lowercase().contains(&f))
+                            .collect();
+                        if matched.is_empty() { continue; }
+                        rows.push(Disp::Head(cat, matched.len()));
+                        if !self.collapsed_cats.contains(cat) { for i in matched { rows.push(Disp::Item(i)); } }
+                    }
+                    eyebrow(ui, &format!("models · {model_total} · all archives"));
+                    ui.add_space(4.0);
+                    egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, 20.0, rows.len(), |ui, range| {
+                        for r in range {
+                            match &rows[r] {
+                                Disp::Head(cat, n) => {
+                                    let open = !self.collapsed_cats.contains(*cat);
+                                    let resp = ui.horizontal(|ui| {
+                                        ui.label(RichText::new(if open { "▾" } else { "▸" }).color(FAINT).size(10.0));
+                                        ui.label(RichText::new(*cat).color(ACC).size(10.5).strong());
+                                        ui.label(RichText::new(format!("{n}")).color(FAINT).size(9.5));
+                                    }).response;
+                                    if ui.interact(resp.rect, egui::Id::new(("cat", *cat)), egui::Sense::click()).clicked() { toggle_cat = Some(*cat); }
+                                }
+                                Disp::Item(i) => {
+                                    let hl = &self.highlights[*i];
+                                    let resp = ui.horizontal(|ui| {
+                                        ui.add_space(14.0);
+                                        ui.add(egui::Label::new(RichText::new(&hl.label).monospace().size(11.0).color(TX)).truncate());
+                                    }).response;
+                                    if ui.interact(resp.rect, egui::Id::new(("m", *i)), egui::Sense::click()).clicked() {
+                                        jump = Some((hl.archive.clone(), hl.path.clone()));
+                                    }
+                                }
+                            }
+                        }
+                    });
+                } else {
+                    // per-archive entries of the selected kind
+                    match &self.archive {
+                        None => { ui.add_space(12.0); ui.label(RichText::new("No archive open — pick one above.").color(FAINT)); }
+                        Some(a) => {
+                            let want = self.strip_kind;
+                            let visible: Vec<usize> = a.tab.entries.iter().enumerate().filter(|(_, e)| {
+                                let k = self.names.get(&e.name_hash).map(|p| Kind::of_path(p)).unwrap_or(Kind::Other);
+                                if k != want { return false; }
+                                f.is_empty() || self.names.get(&e.name_hash).map_or(false, |n| n.to_lowercase().contains(&f))
+                                    || format!("{:08x}", e.name_hash).contains(&f)
+                            }).map(|(i, _)| i).collect();
+                            eyebrow(ui, &format!("{} · {}", want.strip_label().to_lowercase(), visible.len()));
+                            ui.add_space(4.0);
+                            egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, 20.0, visible.len(), |ui, range| {
+                                for row in range {
+                                    let i = visible[row];
+                                    let e = &a.tab.entries[i];
+                                    let sel = self.selected == Some(i);
+                                    let resp = ui.add(egui::Label::new(RichText::new(self.entry_label(e)).monospace().size(11.5)
+                                        .color(if sel { ACC } else { TX })).truncate());
+                                    if ui.interact(resp.rect, egui::Id::new(("row", i)), egui::Sense::click()).clicked() { pick = Some(i); }
+                                }
+                            });
+                        }
+                    }
+                }
+                if let Some(k) = set_strip { self.strip_kind = k; }
+                if let Some(c) = toggle_cat { if !self.collapsed_cats.remove(c) { self.collapsed_cats.insert(c); } }
                 if let Some(i) = pick { self.select(i); }
             });
         if let Some(p) = switch { self.open_archive(p); }
@@ -767,6 +868,9 @@ impl Workshop {
             Some(Preview::Model { parts }) => {
                 ui.label(RichText::new("MODEL").color(ACC).size(9.5).strong());
                 ui.label(RichText::new(format!("{} part(s)", parts.len())).color(TX).size(18.0).strong());
+                if !self.sel_archive.is_empty() {
+                    ui.label(RichText::new(format!("archive · {}", self.sel_archive)).monospace().size(10.5).color(FAINT));
+                }
                 ui.add_space(8.0);
                 for p in parts {
                     card(ui, &p.name, |ui| {
