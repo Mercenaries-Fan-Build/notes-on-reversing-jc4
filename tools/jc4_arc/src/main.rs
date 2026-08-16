@@ -439,9 +439,15 @@ fn main() {
                 Ok(m) => {
                     println!("mesh: {} verts, {} tris  bbox min {:?} max {:?}  (positions within bbox: OK)",
                         m.positions.len(), m.indices.len() / 3, m.bbox_min, m.bbox_max);
-                    if let Some(out) = a.get(3) {
+                    if let Some(out) = a.get(3).filter(|s| !s.starts_with("--")) {
                         std::fs::write(out, jc4_formats::amf::to_obj(&m)).unwrap();
                         println!("wrote {out}");
+                    }
+                    if let Some(png) = a.iter().position(|s| s == "--png").and_then(|i| a.get(i + 1)) {
+                        let yaw = a.iter().position(|s| s == "--yaw").and_then(|i| a.get(i + 1)).and_then(|s| s.parse().ok()).unwrap_or(0.6);
+                        let pitch = a.iter().position(|s| s == "--pitch").and_then(|i| a.get(i + 1)).and_then(|s| s.parse().ok()).unwrap_or(0.35);
+                        std::fs::write(png, jc4_formats::amf::render_png(&m, 512, yaw, pitch)).unwrap();
+                        println!("rendered {png}");
                     }
                 }
                 Err(e) => eprintln!("decode failed: {e}"),
