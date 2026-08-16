@@ -34,17 +34,38 @@ fn u32s(v: &Value, k: &str) -> Vec<u64> {
 fn i16le(d: &[u8], o: usize) -> i16 { i16::from_le_bytes([d[o], d[o + 1]]) }
 fn f32le(d: &[u8], o: usize) -> f32 { f32::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]]) }
 
-/// Decode the highest-detail inline LOD of a meshc/hrmeshc to positions + triangle indices.
-pub fn decode_mesh(meshc: &[u8]) -> Result<Mesh, String> {
-    let adf = adf::parse(meshc.to_vec())?;
-    let v = adf.decode_instances();
-    let header = v.get("header").ok_or("meshc: no header instance")?;
-    let buffers = v.get("buffers").ok_or("meshc: no buffers instance")?;
-    let vb: Vec<Vec<u8>> = buffers.get("VertexBuffers").and_then(|x| x.as_array())
-        .ok_or("no VertexBuffers")?.iter().map(|b| bytes_of(b.get("Data"))).collect();
-    let ib: Vec<Vec<u8>> = buffers.get("IndexBuffers").and_then(|x| x.as_array())
-        .ok_or("no IndexBuffers")?.iter().map(|b| bytes_of(b.get("Data"))).collect();
+/// Vertex/index buffer byte arrays from an AmfMeshBuffers instance (`buffers` in a meshc or hrmeshc).
+fn buffers_of(v: &Value) -> Result<(Vec<Vec<u8>>, Vec<Vec<u8>>), String> {
+    let b = v.get("buffers").ok_or("no buffers instance")?;
+    let vb = b.get("VertexBuffers").and_then(|x| x.as_array()).ok_or("no VertexBuffers")?
+        .iter().map(|b| bytes_of(b.get("Data"))).collect();
+    let ib = b.get("IndexBuffers").and_then(|x| x.as_array()).ok_or("no IndexBuffers")?
+        .iter().map(|b| bytes_of(b.get("Data"))).collect();
+    Ok((vb, ib))
+}
 
+/// Decode the highest-detail LOD present inline in a meshc (low LOD only).
+pub fn decode_mesh(meshc: &[u8]) -> Result<Mesh, String> {
+    let v = adf::parse(meshc.to_vec())?.decode_instances();
+    let header = v.get("header").ok_or("meshc: no header instance")?.clone();
+    let (vb, ib) = buffers_of(&v)?;
+    decode_from(&header, &vb, &ib)
+}
+
+/// Decode the HIGH LOD: the meshc supplies the header (StreamAttributes/LodGroups); the hrmeshc supplies
+/// the high-detail buffers. LodGroup buffer indices address the combined list `meshc ++ hrmeshc`.
+pub fn decode_mesh_hr(meshc: &[u8], hrmeshc: &[u8]) -> Result<Mesh, String> {
+    let mv = adf::parse(meshc.to_vec())?.decode_instances();
+    let header = mv.get("header").ok_or("meshc: no header instance")?.clone();
+    let (mut vb, mut ib) = buffers_of(&mv)?;
+    let hv = adf::parse(hrmeshc.to_vec())?.decode_instances();
+    let (hvb, hib) = buffers_of(&hv)?;
+    vb.extend(hvb);
+    ib.extend(hib);
+    decode_from(&header, &vb, &ib)
+}
+
+fn decode_from(header: &Value, vb: &[Vec<u8>], ib: &[Vec<u8>]) -> Result<Mesh, String> {
     let groups = header.get("LodGroups").and_then(|x| x.as_array()).ok_or("no LodGroups")?;
     let empty = Vec::new();
     let meshes_of = |g: &Value| g.get("Meshes").and_then(|x| x.as_array()).cloned().unwrap_or_default();
@@ -64,7 +85,7 @@ pub fn decode_mesh(meshc: &[u8]) -> Result<Mesh, String> {
     let (mut positions, mut indices) = (Vec::new(), Vec::new());
     for mesh in group.get("Meshes").and_then(|x| x.as_array()).unwrap_or(&empty) {
         let base = positions.len() as u32;
-        let (p, idx) = decode_one_mesh(mesh, &vb, &ib)?;
+        let (p, idx) = decode_one_mesh(mesh, vb, ib)?;
         positions.extend(p);
         indices.extend(idx.into_iter().map(|i| i + base));
     }
