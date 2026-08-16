@@ -18,9 +18,10 @@ pub struct Mesh {
     pub submeshes: Vec<SubMesh>,
 }
 
-/// A contiguous run of triangles sharing one material — carries the diffuse texture PATH (resolved to
-/// pixels by the caller, which has archive access for external textures).
-pub struct SubMesh { pub tri_start: usize, pub tri_count: usize, pub diffuse: Option<String> }
+/// A contiguous run of triangles sharing one material. `material` = the mesh's `SubMeshId` (matches a
+/// modelc material Name); `diffuse` = that material's resolved diffuse `.ddsc` PATH (pixels resolved by the
+/// caller, which has archive access for external textures).
+pub struct SubMesh { pub tri_start: usize, pub tri_count: usize, pub material: Option<String>, pub diffuse: Option<String> }
 
 /// A decoded RGBA texture the rasterizer can sample.
 pub struct Texture { pub w: usize, pub h: usize, pub rgba: Vec<u8> }
@@ -101,13 +102,17 @@ fn decode_from(header: &Value, vb: &[Vec<u8>], ib: &[Vec<u8>]) -> Result<Mesh, S
         .max_by_key(|g| meshes_of(g).iter().map(|m| u64_at(m, "VertexCount")).sum::<u64>())
         .ok_or("no inline-decodable LOD group (buffers may be in the .hrmeshc)")?;
 
-    let (mut positions, mut uvs, mut indices) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut positions, mut uvs, mut indices, mut submeshes) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for mesh in group.get("Meshes").and_then(|x| x.as_array()).unwrap_or(&empty) {
         let base = positions.len() as u32;
-        let (p, uv, idx) = decode_one_mesh(mesh, vb, ib)?;
+        let tri_base = indices.len() / 3;
+        let (p, uv, idx, subs) = decode_one_mesh(mesh, vb, ib)?;
         positions.extend(p);
         uvs.extend(uv);
         indices.extend(idx.into_iter().map(|i| i + base));
+        for (ts, tc, id) in subs {
+            submeshes.push(SubMesh { tri_start: tri_base + ts, tri_count: tc, material: Some(id).filter(|s| !s.is_empty()), diffuse: None });
+        }
     }
     if positions.is_empty() { return Err("no vertices decoded".into()); }
 
@@ -117,12 +122,10 @@ fn decode_from(header: &Value, vb: &[Vec<u8>], ib: &[Vec<u8>]) -> Result<Mesh, S
     let eps = 1e-3 + 0.02 * (0..3).map(|i| (bmax[i] - bmin[i]).abs()).fold(0.0f32, f32::max);
     let inside = positions.iter().all(|p| (0..3).all(|i| p[i] >= bmin[i] - eps && p[i] <= bmax[i] + eps));
     if !inside { return Err("decoded positions fall outside the mesh BoundingBox (bad dequant/layout)".into()); }
-    let tri_count = indices.len() / 3;
-    Ok(Mesh { positions, uvs, indices, bbox_min: bmin, bbox_max: bmax,
-        submeshes: vec![SubMesh { tri_start: 0, tri_count, diffuse: None }] })
+    Ok(Mesh { positions, uvs, indices, bbox_min: bmin, bbox_max: bmax, submeshes })
 }
 
-fn decode_one_mesh(mesh: &Value, vb: &[Vec<u8>], ib: &[Vec<u8>]) -> Result<(Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<u32>), String> {
+fn decode_one_mesh(mesh: &Value, vb: &[Vec<u8>], ib: &[Vec<u8>]) -> Result<(Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<u32>, Vec<(usize, usize, String)>), String> {
     let vcount = u64_at(mesh, "VertexCount") as usize;
     let attrs = mesh.get("StreamAttributes").and_then(|x| x.as_array()).ok_or("no StreamAttributes")?;
     let pos = attrs.iter().find(|a| a.get("Usage").and_then(|u| u.as_str()) == Some("AmfUsage_Position"))
@@ -194,7 +197,17 @@ fn decode_one_mesh(mesh: &Value, vb: &[Vec<u8>], ib: &[Vec<u8>]) -> Result<(Vec<
         if idx as usize >= vcount { return Err(format!("index {idx} >= vertex count {vcount}")); }
         indices.push(idx);
     }
-    Ok((positions, uvs, indices))
+
+    // per-material submesh ranges (SubMeshId = material name; IndexStreamOffset/IndexCount in indices)
+    let mut subs: Vec<(usize, usize, String)> = mesh.get("SubMeshes").and_then(|x| x.as_array())
+        .map(|arr| arr.iter().map(|s| {
+            let ts = u64_at(s, "IndexStreamOffset") as usize / 3;
+            let tc = u64_at(s, "IndexCount") as usize / 3;
+            let id = s.get("SubMeshId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            (ts, tc, id)
+        }).collect()).unwrap_or_default();
+    if subs.is_empty() { subs.push((0, indices.len() / 3, String::new())); }
+    Ok((positions, uvs, indices, subs))
 }
 
 // ── headless z-buffered rasterizer (render oracle) ───────────────────────────────────────────────
@@ -265,7 +278,7 @@ pub fn rasterize_rgba(m: &Mesh, w: usize, h: usize, yaw: f32, pitch: f32, base: 
         let n = { let u = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]]; let ww = [pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]];
                   [u[1] * ww[2] - u[2] * ww[1], u[2] * ww[0] - u[0] * ww[2], u[0] * ww[1] - u[1] * ww[0]] };
         let nl = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(1e-9);
-        let sh = ((n[0] * light[0] + n[1] * light[1] + n[2] * light[2]) / nl).abs() * 0.75 + 0.25;
+        let sh = ((n[0] * light[0] + n[1] * light[1] + n[2] * light[2]) / nl).abs() * 0.5 + 0.5;
         let flat = [(base[0] as f32 * sh) as u8, (base[1] as f32 * sh) as u8, (base[2] as f32 * sh) as u8, 255];
         let area = edge(pa[0], pa[1], pb[0], pb[1], pc[0], pc[1]);
         if area.abs() < 1e-6 { continue; }
@@ -404,37 +417,48 @@ pub fn decode_model_asm(sarc_bytes: &[u8], rtpc_bytes: Option<&[u8]>, sel: PartS
             out.positions.push(q);
             for i in 0..3 { out.bbox_min[i] = out.bbox_min[i].min(q[i]); out.bbox_max[i] = out.bbox_max[i].max(q[i]); }
         }
-        out.uvs.extend(mesh.uvs);
+        out.uvs.extend(&mesh.uvs);
         out.indices.extend(mesh.indices.iter().map(|i| i + base_i));
-        let diffuse = modelc.get(stem).and_then(|mc| diffuse_of_modelc(mc));
-        out.submeshes.push(SubMesh { tri_start, tri_count: mesh.indices.len() / 3, diffuse });
+        let matmap = modelc.get(stem).map(|mc| material_diffuse_map(mc)).unwrap_or_default();
+        for sm in &mesh.submeshes {
+            let diffuse = sm.material.as_ref().and_then(|m| matmap.get(m).cloned());
+            out.submeshes.push(SubMesh { tri_start: tri_start + sm.tri_start, tri_count: sm.tri_count, material: sm.material.clone(), diffuse });
+        }
         parts += 1;
     }
     if parts == 0 { return Err("no render mesh parts".into()); }
     Ok(out)
 }
 
-/// The diffuse texture path from a `.modelc` (AMF material) — first `.ddsc` whose name marks it diffuse
-/// (`_dif`/`_diff`/`albedo`), skipping dummy padding slots.
-fn diffuse_of_modelc(bytes: &[u8]) -> Option<String> {
-    let v = adf::parse(bytes.to_vec()).ok()?.decode_instances();
-    fn walk(v: &Value, best: &mut Option<String>) {
-        if best.is_some() { return; }
+/// Map each `.modelc` material Name → its diffuse `.ddsc` path (`_dif`/`_diff`/`albedo`, skipping dummies).
+/// Submeshes bind to materials by name (`SubMeshId`).
+fn material_diffuse_map(bytes: &[u8]) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    let v = match adf::parse(bytes.to_vec()) { Ok(a) => a.decode_instances(), Err(_) => return out };
+    fn find_mats(v: &Value) -> Option<&Vec<Value>> {
         match v {
-            Value::String(s) => {
-                let l = s.to_ascii_lowercase();
-                if l.ends_with(".ddsc") && !l.contains("dummy") && (l.contains("_dif") || l.contains("_diff") || l.contains("albedo")) {
-                    *best = Some(s.clone());
-                }
+            Value::Object(m) => {
+                if let Some(Value::Array(a)) = m.get("Materials") { if a.iter().any(|x| x.get("Name").is_some()) { return Some(a); } }
+                m.values().find_map(find_mats)
             }
-            Value::Array(a) => a.iter().for_each(|x| walk(x, best)),
-            Value::Object(m) => m.values().for_each(|x| walk(x, best)),
-            _ => {}
+            Value::Array(a) => a.iter().find_map(find_mats),
+            _ => None,
         }
     }
-    let mut best = None;
-    walk(&v, &mut best);
-    best
+    if let Some(mats) = find_mats(&v) {
+        for mat in mats {
+            let name = mat.get("Name").and_then(|n| n.as_str()).unwrap_or("");
+            if name.is_empty() { continue; }
+            let dif = mat.get("Textures").and_then(|t| t.as_array()).and_then(|texs| {
+                texs.iter().filter_map(|t| t.as_str()).find(|s| {
+                    let l = s.to_ascii_lowercase();
+                    l.ends_with(".ddsc") && !l.contains("dummy") && (l.contains("_dif") || l.contains("_diff") || l.contains("albedo"))
+                }).map(|s| s.to_string())
+            });
+            if let Some(d) = dif { out.insert(name.to_string(), d); }
+        }
+    }
+    out
 }
 
 /// Wavefront OBJ (positions + triangles) for eyeballing the decode in any 3D viewer.
