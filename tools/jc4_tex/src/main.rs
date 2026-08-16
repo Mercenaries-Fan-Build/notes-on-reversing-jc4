@@ -9,6 +9,7 @@ fn main() {
         eprintln!("jc4_tex — AVTX texture tool");
         eprintln!("  jc4_tex info   <avtx>            header + best-inline-mip summary");
         eprintln!("  jc4_tex dds    <avtx> <out.dds>  export best inline mip as a DDS (DX10)");
+        eprintln!("  jc4_tex rgba   <avtx> [out.ppm]  decode best inline mip to RGBA (same path as the workshop view)");
         eprintln!("  jc4_tex verify <dir>             oracle over every *.avtx (size + format census)");
         return;
     }
@@ -36,6 +37,21 @@ fn main() {
                     println!("wrote {} ({}x{} {}, {} bytes)", a[3], m.width, m.height, avtx::dxgi_name(m.dxgi_format), dds.len());
                 }
                 Err(e) => { eprintln!("{e}"); std::process::exit(1) }
+            }
+        }
+        "rgba" => {
+            let b = std::fs::read(&a[2]).unwrap();
+            let m = avtx::best_inline_mip(&b).unwrap_or_else(|e| { eprintln!("{e}"); std::process::exit(1) });
+            let rgba = avtx::decode_rgba(&m).unwrap_or_else(|e| { eprintln!("{e}"); std::process::exit(1) });
+            let nonzero = rgba.chunks_exact(4).filter(|p| p[0] != 0 || p[1] != 0 || p[2] != 0).count();
+            println!("decoded {}x{} {} -> {} RGBA bytes; {}/{} texels non-black",
+                m.width, m.height, avtx::dxgi_name(m.dxgi_format), rgba.len(), nonzero, (m.width * m.height));
+            if let Some(out) = a.get(3) {
+                // PPM P6 (opaque RGB) — quick eyeball in any image viewer
+                let mut ppm = format!("P6\n{} {}\n255\n", m.width, m.height).into_bytes();
+                for px in rgba.chunks_exact(4) { ppm.extend_from_slice(&px[..3]); }
+                std::fs::write(out, &ppm).unwrap();
+                println!("wrote {out}");
             }
         }
         "verify" => {
