@@ -5,11 +5,10 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use crate::oodle::Oodle;
 
-pub const GAME_DIR: &str = "C:/Program Files (x86)/Steam/steamapps/common/Just Cause 4";
-
-/// Oodle DLL path: `$JC4_OODLE_DLL` override, else the game dir's `oo2core_7_win64.dll`.
-pub fn default_oodle_dll() -> String {
-    std::env::var("JC4_OODLE_DLL").unwrap_or_else(|_| format!("{GAME_DIR}/oo2core_7_win64.dll"))
+/// Oodle DLL path from `$JC4_OODLE_DLL` (empty if unset). No path is hardcoded — the caller (CLI env
+/// or the workshop's config file) supplies the game's `oo2core_7_win64.dll` location.
+pub fn oodle_dll_from_env() -> String {
+    std::env::var("JC4_OODLE_DLL").unwrap_or_default()
 }
 
 fn u16le(b: &[u8], o: usize) -> u16 { u16::from_le_bytes([b[o], b[o + 1]]) }
