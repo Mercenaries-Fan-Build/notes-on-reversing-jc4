@@ -11,7 +11,7 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use eframe::egui::{self, Color32, RichText, Stroke};
-use jc4_formats::{adf, avtx, bundle, hash::hashlittle, oodle::Oodle, sarc, tab};
+use jc4_formats::{adf, amf, avtx, bundle, hash::hashlittle, oodle::Oodle, sarc, tab};
 
 // ── storm-rig palette ──────────────────────────────────────────────────────────────────────────
 const G0: Color32 = Color32::from_rgb(0x0b, 0x10, 0x15); // app ground
@@ -186,6 +186,8 @@ struct Workshop {
     oodle: Option<Oodle>,
     tex: Option<egui::TextureHandle>,          // uploaded preview texture (current selection)
     tex_pending: Option<egui::ColorImage>,     // decoded RGBA awaiting upload (needs ctx, done in update)
+    mesh: Option<amf::Mesh>,                   // decoded model geometry (current selection)
+    orbit: (f32, f32),                         // model viewport camera (yaw, pitch)
 }
 
 fn basename(s: &str) -> &str { s.rsplit(['/', '\\']).next().unwrap_or(s) }
@@ -262,6 +264,22 @@ impl Workshop {
                     Err(e) => self.status = format!("texture decode: {e}"),
                 }
             }
+        }
+        // for a model, decode the most-detailed inline mesh part for the viewport
+        self.mesh = None;
+        if matches!(self.preview, Some(Preview::Model { .. })) {
+            if let Ok(members) = sarc::parse(&data) {
+                for mem in &members {
+                    if mem.stored && mem.name.ends_with(".meshc") {
+                        if let Some(d) = mem.data(&data) {
+                            if let Ok(mesh) = amf::decode_mesh(d) {
+                                if self.mesh.as_ref().map_or(true, |b| mesh.positions.len() > b.positions.len()) { self.mesh = Some(mesh); }
+                            }
+                        }
+                    }
+                }
+            }
+            if self.mesh.is_some() { self.orbit = (0.6, 0.35); }
         }
     }
 }
@@ -589,14 +607,81 @@ impl Workshop {
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| self.ui_inspector(ui));
             });
 
-        // viewport (stub)
+        // viewport
         egui::CentralPanel::default().frame(egui::Frame::none().fill(G0)).show(ctx, |ui| {
-            let dims = match &self.preview {
-                Some(Preview::Texture(t)) => t.dims.clone(),
-                _ => None,
-            };
-            viewport(ui, dims.as_ref(), self.sel_kind, self.tex.as_ref());
+            if self.sel_kind == Some(Kind::Model) && self.mesh.is_some() {
+                self.model_viewport(ui);
+            } else {
+                let dims = match &self.preview {
+                    Some(Preview::Texture(t)) => t.dims.clone(),
+                    _ => None,
+                };
+                viewport(ui, dims.as_ref(), self.sel_kind, self.tex.as_ref());
+            }
         });
+    }
+
+    /// Software-rendered model preview: orbit camera (drag), flat shading, painter's-algorithm depth
+    /// sort, drawn as a single egui mesh. No wgpu pipeline — fast enough for the inline LOD meshes.
+    fn model_viewport(&mut self, ui: &mut egui::Ui) {
+        let rect = ui.available_rect_before_wrap();
+        let resp = ui.interact(rect, egui::Id::new("model_vp"), egui::Sense::drag());
+        if resp.dragged() {
+            let d = resp.drag_delta();
+            self.orbit.0 += d.x * 0.01;
+            self.orbit.1 = (self.orbit.1 + d.y * 0.01).clamp(-1.5, 1.5);
+        }
+        let p = ui.painter_at(rect);
+        p.rect_filled(rect, 0.0, G0);
+        let inner = rect.shrink(14.0);
+        p.rect(inner, 6.0, Color32::from_rgb(0x10, 0x18, 0x1e), Stroke::new(1.5, LINE));
+        let mesh = self.mesh.as_ref().unwrap();
+
+        let (yaw, pitch) = self.orbit;
+        let (cy, sy, cp, sp) = (yaw.cos(), yaw.sin(), pitch.cos(), pitch.sin());
+        let rot = |v: [f32; 3]| -> [f32; 3] {
+            let (x, z) = (v[0] * cy + v[2] * sy, -v[0] * sy + v[2] * cy);
+            let (y, z2) = (v[1] * cp - z * sp, v[1] * sp + z * cp);
+            [x, y, z2]
+        };
+        let c = [0, 1, 2].map(|i| (mesh.bbox_min[i] + mesh.bbox_max[i]) * 0.5);
+        let radius = (0..3).map(|i| (mesh.bbox_max[i] - mesh.bbox_min[i]).abs()).fold(1e-6f32, f32::max) * 0.5;
+        let avail = inner.shrink(20.0);
+        let scale = avail.width().min(avail.height()) / (2.0 * radius) * 0.85;
+        let center = inner.center();
+        let proj: Vec<([f32; 3], egui::Pos2)> = mesh.positions.iter().map(|v| {
+            let r = rot([v[0] - c[0], v[1] - c[1], v[2] - c[2]]);
+            (r, egui::pos2(center.x + r[0] * scale, center.y - r[1] * scale))
+        }).collect();
+
+        let light = { let l = [0.35f32, 0.5, 0.79]; let n = (l[0] * l[0] + l[1] * l[1] + l[2] * l[2]).sqrt(); [l[0] / n, l[1] / n, l[2] / n] };
+        let mut tris: Vec<(f32, [usize; 3], f32)> = Vec::with_capacity(mesh.indices.len() / 3);
+        for t in mesh.indices.chunks_exact(3) {
+            let (a, b, cc) = (t[0] as usize, t[1] as usize, t[2] as usize);
+            let (pa, pb, pc) = (proj[a].0, proj[b].0, proj[cc].0);
+            let u = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]];
+            let w = [pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]];
+            let n = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]];
+            let nl = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(1e-9);
+            let shade = ((n[0] * light[0] + n[1] * light[1] + n[2] * light[2]) / nl).abs() * 0.8 + 0.2;
+            tris.push(((pa[2] + pb[2] + pc[2]) / 3.0, [a, b, cc], shade));
+        }
+        tris.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap_or(std::cmp::Ordering::Equal)); // far -> near
+
+        let mut m = egui::epaint::Mesh::default();
+        for (_, [a, b, cc], sh) in &tris {
+            let col = Color32::from_rgb((ACC.r() as f32 * sh) as u8, (ACC.g() as f32 * sh) as u8, (ACC.b() as f32 * sh) as u8);
+            let i0 = m.vertices.len() as u32;
+            for &vi in &[*a, *b, *cc] {
+                m.vertices.push(egui::epaint::Vertex { pos: proj[vi].1, uv: egui::epaint::WHITE_UV, color: col });
+            }
+            m.indices.extend([i0, i0 + 1, i0 + 2]);
+        }
+        p.add(egui::Shape::mesh(m));
+        p.text(inner.left_top() + egui::vec2(11.0, 13.0), egui::Align2::LEFT_CENTER, "MODEL", egui::FontId::proportional(10.0), ACC);
+        p.text(inner.right_top() + egui::vec2(-11.0, 13.0), egui::Align2::RIGHT_CENTER,
+            format!("{} verts · {} tris · drag to orbit", mesh.positions.len(), mesh.indices.len() / 3),
+            egui::FontId::monospace(10.0), DIM);
     }
 
     fn ui_inspector(&self, ui: &mut egui::Ui) {
