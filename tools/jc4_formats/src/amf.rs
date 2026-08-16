@@ -250,13 +250,30 @@ fn is_render_part(base: &str) -> bool {
     !(b.contains("_debris") || b.contains("_dst") || b.contains("_destroyed") || b.contains("_broken") || b.contains("_wreck"))
 }
 
-/// Decode and MERGE the renderable mesh parts of a model SARC (`.ee`) into one Mesh — each `.meshc`
-/// paired with its `.hrmeshc` for high LOD, destruction/debris parts gated out. NOTE: parts are merged in
-/// whatever space their own bbox implies. This is correct for a model's own parts (shared object space),
-/// but ATTACHED sub-entities (e.g. a payload) carry a transform in the entity `.epe` RTPC we don't apply
-/// yet — so such attachments render at the origin instead of their spawned offset.
-pub fn decode_model(sarc_bytes: &[u8]) -> Result<Mesh, String> {
+const IDENT: [f32; 16] = [1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.];
+/// Apply a row-major mat4 (translation in [12..15]) to a point (row-vector convention v·M).
+fn xform(m: &[f32; 16], v: [f32; 3]) -> [f32; 3] {
+    [v[0] * m[0] + v[1] * m[4] + v[2] * m[8] + m[12],
+     v[0] * m[1] + v[1] * m[5] + v[2] * m[9] + m[13],
+     v[0] * m[2] + v[1] * m[6] + v[2] * m[10] + m[14]]
+}
+/// Match a SARC part base name to a declared render part, tolerating the `mshswap` mesh-swap suffix.
+fn part_xform(base: &str, render: &std::collections::HashMap<String, [f32; 16]>) -> Option<[f32; 16]> {
+    let cands = [base.to_string(), base.trim_end_matches("mshswap").to_string(), base.trim_end_matches("_mshswap").to_string()];
+    cands.iter().find_map(|c| render.get(c).copied())
+}
+
+pub fn decode_model(sarc_bytes: &[u8]) -> Result<Mesh, String> { decode_model_asm(sarc_bytes, None) }
+
+/// FAITHFUL model assembly. With the entity `.epe` RTPC (`rtpc_bytes`), render EXACTLY the parts the entity
+/// declares (its render-part nodes), each placed by its `world` transform — so bundled-but-separate payloads
+/// (a different class) are correctly excluded and attached parts land at their real offset. Without the RTPC,
+/// fall back to merging all parts (destruction/debris name-gated). Each `.meshc` is hr-paired for high LOD.
+pub fn decode_model_asm(sarc_bytes: &[u8], rtpc_bytes: Option<&[u8]>) -> Result<Mesh, String> {
     let members = crate::sarc::parse(sarc_bytes)?;
+    let render: Option<std::collections::HashMap<String, [f32; 16]>> = rtpc_bytes
+        .and_then(|r| crate::rtpc::render_parts(r).ok())
+        .map(|v| v.into_iter().collect());
     let hr: std::collections::HashMap<&str, &[u8]> = members.iter()
         .filter(|m| m.stored && m.name.ends_with(".hrmeshc"))
         .filter_map(|m| m.data(sarc_bytes).map(|d| (m.name.trim_end_matches(".hrmeshc"), d)))
@@ -265,19 +282,28 @@ pub fn decode_model(sarc_bytes: &[u8]) -> Result<Mesh, String> {
     let mut parts = 0;
     for m in &members {
         if !(m.stored && m.name.ends_with(".meshc")) { continue; }
-        if !is_render_part(m.name.trim_end_matches(".meshc").rsplit('/').next().unwrap_or("")) { continue; }
+        let base = m.name.trim_end_matches(".meshc").rsplit('/').next().unwrap_or("").to_ascii_lowercase();
+        // faithful gate: with the RTPC, keep only declared render parts (excludes the payload); else name-gate debris
+        let tf = match &render {
+            Some(map) => match part_xform(&base, map) { Some(t) => t, None => continue },
+            None => { if !is_render_part(&base) { continue; } IDENT }
+        };
         let d = match m.data(sarc_bytes) { Some(d) => d, None => continue };
         let mesh = match hr.get(m.name.trim_end_matches(".meshc")) {
             Some(h) => decode_mesh_hr(d, h), None => decode_mesh(d),
         };
         let mesh = match mesh { Ok(x) => x, Err(_) => continue };
-        let base = out.positions.len() as u32;
-        out.positions.extend_from_slice(&mesh.positions);
-        out.indices.extend(mesh.indices.iter().map(|i| i + base));
-        for i in 0..3 { out.bbox_min[i] = out.bbox_min[i].min(mesh.bbox_min[i]); out.bbox_max[i] = out.bbox_max[i].max(mesh.bbox_max[i]); }
+        let base_i = out.positions.len() as u32;
+        let identity = tf == IDENT;
+        for &p in &mesh.positions {
+            let q = if identity { p } else { xform(&tf, p) };
+            out.positions.push(q);
+            for i in 0..3 { out.bbox_min[i] = out.bbox_min[i].min(q[i]); out.bbox_max[i] = out.bbox_max[i].max(q[i]); }
+        }
+        out.indices.extend(mesh.indices.iter().map(|i| i + base_i));
         parts += 1;
     }
-    if parts == 0 { return Err("no mesh parts in SARC".into()); }
+    if parts == 0 { return Err("no render mesh parts".into()); }
     Ok(out)
 }
 
