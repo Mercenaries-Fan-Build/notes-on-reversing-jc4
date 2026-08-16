@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 
 mod crack;
+mod gpu;
 mod verify;
 
 fn main() {
@@ -14,6 +15,8 @@ fn main() {
         eprintln!("        recover names via grammar/vocabulary generation + lookup3 match (feedback loop)");
         eprintln!("  jc4_probe verify <game_dir> <cracked.filelist>");
         eprintln!("        content oracle: decode each cracked entry, confirm magic matches ext (collision filter)");
+        eprintln!("  jc4_probe gpu    <game_dir> <dict.filelist> <out.filelist> --context CTX");
+        eprintln!("        GPU combinator: on-device generate CTX/<tok>_<tok>.<ext>, lookup3, match (no vocab cap)");
         return;
     }
     match a[1].as_str() {
@@ -30,6 +33,11 @@ fn main() {
         "verify" => {
             if a.len() < 4 { eprintln!("usage: jc4_probe verify <game_dir> <cracked.filelist>"); return; }
             verify::run(&a[2], &a[3]);
+        }
+        "gpu" => {
+            if a.len() < 6 { eprintln!("usage: jc4_probe gpu <game_dir> <dict.filelist> <out.filelist> --context CTX"); return; }
+            let ctx = a.iter().position(|s| s == "--context").and_then(|i| a.get(i + 1));
+            match ctx { Some(c) => gpu::run(&a[2], &a[3], &a[4], c), None => eprintln!("--context CTX required (e.g. models/environments)") }
         }
         other => eprintln!("unknown command {other}"),
     }
