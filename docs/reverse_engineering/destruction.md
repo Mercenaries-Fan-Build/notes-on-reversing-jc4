@@ -242,7 +242,9 @@ not in the dump).
 | `10000`, `4000`, `1000` | element reserves | FUN_14168a050 | instanced-debris pool ceilings, strides 8 / 0x10 / 4/0xc (proven) |
 | `0x8000` | 32768 | FUN_141670d10 (FUN_141138ec0) | world command-buffer capacity (inferred) |
 | `0x1400` / `0x1000` / `0x400` | flag bits at body+0x2c | FUN_1416b21e0 | "was hit" mask / break-piece / break-piece-alt (proven flag writes; names inferred) |
-| `DAT_141ca6cac` | float (7614 refs — shared engine const) | FUN_1416b21e0 | explosion strength scalar divided by piece field +0x44 (inferred) |
+| `DAT_141ca6cac` | **`1.0` (live-read)** | FUN_1416b21e0 | explosion strength scalar ÷ piece field +0x44 (value proven live; role inferred) |
+| `DAT_141ca6f44` | **`0.5` (live-read)** | FUN_140ab9cf0 | global impulse scalar in the CForcePulse apply (value proven live; role inferred) |
+| `DAT_141cae1c0` | **`50.0` (live-read)** | FUN_140abd680 | CForcePulse radius-growth cap in tick (value proven live) |
 | system hashes | `0x41cad740`, `0x41cad888` | FUN_148f958e0/FUN_148f960c0 | `CHavokDestructionDecalManager` / `…InstancedGraphicsManager` (proven) |
 
 Note: `0x80000000` written to `+0x?4` array-capacity fields and `& 0x3fffffff` capacity masks are the
@@ -270,12 +272,16 @@ appears throughout these ctors. (proven idiom, seen in every ctor above)
 - `CForceField` / `CForcePoint` per-frame apply functions are **not located** (they don't reuse the Pulse
   sinks); their ctor↔class binding is inferred via factory vtables `PTR_LAB_141d9b610/638/5e8` which live in
   the data section, absent from this dump — route: read those vtable slots in the loaded binary.
-- `DAT_141ca6f44` (global impulse scalar in the apply expression) and +0x240 (20.0) values are unresolved
-  from the text dump. (inferred / speculative)
+- ~~`DAT_141ca6f44` (global impulse scalar in the apply expression) value unresolved~~ — **RESOLVED via live
+  read (x64dbg, 2026-08-16): `DAT_141ca6f44 = 0.5`** (`00 00 00 3f`). Value proven; role (global impulse
+  scalar) still as-inferred. +0x240 = 20.0 is a proven ctor default.
 - The debris despawn timer value lives in per-instance `hkndBodyTimeoutRuntime` data (0xc-stride array),
   not as a decomp literal — needs a live-data / tagfile read to pin down. (see `[[havok-hct-2018]]`)
-- `DAT_141ca6cac` is a heavily-shared engine float (7614 refs); its use here as an explosion scalar is
-  inferred from the divide — value not resolvable from the text dump alone.
+- ~~`DAT_141ca6cac` value not resolvable from the text dump~~ — **RESOLVED via live read (x64dbg,
+  2026-08-16): `DAT_141ca6cac = 1.0`** (`00 00 80 3f`). Heavily-shared engine float (7614 refs); value proven,
+  its role here as the explosion scalar is inferred from the divide.
+- **Live read (x64dbg, 2026-08-16): `DAT_141cae1c0 = 50.0`** (`00 00 48 42`) — the `CForcePulse` radius-growth
+  cap in the tick (`FUN_140abd680`, line ~202). Value proven.
 - The break-threshold (how much impulse fractures a given body) is a property of the Havok destruction
   asset (breakable-body definition in the `hknd` tagfile), not of this game-side code — belongs to the
   data side per `[[havok-hct-2018]]`, not re-derived here.
