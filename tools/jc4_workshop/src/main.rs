@@ -257,6 +257,9 @@ struct Workshop {
     model_src: Option<(Vec<u8>, Option<Vec<u8>>)>, // (sarc, epe) for re-assembly on layer toggle
     part_sel: amf::PartSel,                    // which model layers to render
     part_counts: (usize, usize, usize),        // (render, payload, debris) part counts
+    model_tex_pool: Vec<amf::Texture>,         // deduped diffuse textures for the current model
+    model_sub_tex: Vec<Option<usize>>,         // per-submesh index into the pool
+    model_textured: bool,                       // show textures vs flat shading
     highlights: Vec<Highlight>,                // curated + auto-discovered model units (global)
     model_groups: Vec<(&'static str, Vec<usize>)>, // highlights grouped by category (CATEGORY_ORDER)
     strip_kind: Kind,                          // active category-strip tab
@@ -344,6 +347,51 @@ impl Workshop {
             None => return,
         };
         self.model_tex = None;
+        self.build_textures();
+    }
+
+    /// Resolve each submesh's diffuse `.ddsc` (SARC-stored or fetched external) into a deduped texture pool.
+    fn build_textures(&mut self) {
+        self.model_tex_pool.clear();
+        self.model_sub_tex.clear();
+        let sarc = match &self.model_src { Some((s, _)) => s.clone(), None => return };
+        let paths: Vec<Option<String>> = match &self.mesh { Some(m) => m.submeshes.iter().map(|s| s.diffuse.clone()).collect(), None => return };
+        let mut idx_of: BTreeMap<String, Option<usize>> = BTreeMap::new();
+        let mut sub_tex = Vec::with_capacity(paths.len());
+        for p in paths {
+            let slot = match p {
+                Some(path) => match idx_of.get(&path) {
+                    Some(&s) => s,
+                    None => {
+                        let s = self.resolve_texture(&sarc, &path).map(|t| { self.model_tex_pool.push(t); self.model_tex_pool.len() - 1 });
+                        idx_of.insert(path, s);
+                        s
+                    }
+                },
+                None => None,
+            };
+            sub_tex.push(slot);
+        }
+        self.model_sub_tex = sub_tex;
+    }
+
+    /// Decode a diffuse `.ddsc` to an RGBA texture — from a stored SARC member, else fetched from the archive.
+    fn resolve_texture(&mut self, sarc: &[u8], path: &str) -> Option<amf::Texture> {
+        let stored: Option<Vec<u8>> = sarc::parse(sarc).ok()
+            .and_then(|ms| ms.iter().find(|m| m.stored && m.name == path).and_then(|m| m.data(sarc).map(|d| d.to_vec())));
+        let data = match stored {
+            Some(d) => d,
+            None => {
+                let h = hashlittle(path.as_bytes(), 0);
+                let arc = self.archive.as_ref()?;
+                let entry = *arc.tab.entries.iter().find(|e| e.name_hash == h)?;
+                let mut f = File::open(&arc.arc_path).ok()?;
+                tab::decode_entry(&mut f, &arc.tab, &entry, &self.oodle_dll, &mut self.oodle).ok()?
+            }
+        };
+        let mip = avtx::best_inline_mip(&data).ok()?;
+        let rgba = avtx::decode_rgba(&mip).ok()?;
+        Some(amf::Texture { w: mip.width as usize, h: mip.height as usize, rgba })
     }
 
     /// Jump to a curated highlight: open its archive (if needed), then select the entry by name hash.
@@ -405,6 +453,7 @@ impl Workshop {
             self.part_counts = amf::model_part_counts(&data, epe.as_deref());
             self.part_sel = amf::PartSel::default();
             self.orbit = (0.7, 0.35);
+            self.model_textured = true;
             self.model_src = Some((data.clone(), epe));
             self.reassemble();
         }
@@ -837,7 +886,9 @@ impl Workshop {
         let want = (self.orbit.0, self.orbit.1, w, h);
         if self.model_tex.is_none() || self.model_render != want {
             if let Some(mesh) = self.mesh.as_ref() {
-                let rgba = amf::rasterize_rgba(mesh, w, h, self.orbit.0, self.orbit.1, [ACC.r(), ACC.g(), ACC.b()]);
+                let (pool, sub): (&[amf::Texture], &[Option<usize>]) =
+                    if self.model_textured { (&self.model_tex_pool, &self.model_sub_tex) } else { (&[], &[]) };
+                let rgba = amf::rasterize_rgba(mesh, w, h, self.orbit.0, self.orbit.1, [ACC.r(), ACC.g(), ACC.b()], pool, sub);
                 let img = egui::ColorImage::from_rgba_unmultiplied([w, h], &rgba);
                 self.model_tex = Some(ui.ctx().load_texture("model_tex", img, egui::TextureOptions::LINEAR));
                 self.model_render = want;
@@ -865,12 +916,16 @@ impl Workshop {
             let mut sel = self.part_sel;
             let mut changed = false;
             ui.label(RichText::new("LAYERS").color(DIM).size(9.0).strong());
+            let mut textured = self.model_textured;
+            let mut tex_changed = false;
             ui.horizontal_wrapped(|ui| {
                 changed |= ui.checkbox(&mut sel.render, format!("Vehicle · {r}")).changed();
                 if o > 0 { changed |= ui.checkbox(&mut sel.other, format!("Payload · {o}")).changed(); }
                 if d > 0 { changed |= ui.checkbox(&mut sel.debris, format!("Debris · {d}")).changed(); }
+                tex_changed = ui.checkbox(&mut textured, "Textured").changed();
             });
             if changed { self.part_sel = sel; self.reassemble(); }
+            if tex_changed { self.model_textured = textured; self.model_tex = None; }
             ui.add_space(8.0);
         }
         match &self.preview {
