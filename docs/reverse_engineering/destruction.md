@@ -191,15 +191,53 @@ kick it. (proven — the string list)
 `DAT_142cb9998`) on the tracking side, and `TtDestruction` is the profiler timeline bucket (case 9 in
 FUN around line 5321754) — i.e. destruction has its own CPU-timeline category. (proven — those strings)
 
+## CForcePulse — force-application math (proven, deep dig)
+
+`CForcePulse` is a **one-shot expanding radial shockwave**, reconstructed end-to-end. Object size **0x418**
+(proven three ways: alloc `FUN_1496a12b0(0x418)` in FUN_140838720, deleting-dtor `FUN_140c7e180(_,0x418)`
+in FUN_14970cbc0, factory name→type `DAT_142cb91e0`). Copy-ctor FUN_140a88bb0 exposes the full layout
+(physics handle +0x398, resolved-body +0x3a0, magic `0xF1EF0A7B`).
+
+**Per-frame tick = FUN_140abd680** (proven): gates on active byte +0x224, calls apply with frame `dt`
+(`frameCtx+0x20`), then **grows the pulse radius** (min +0x218, cap `DAT_141cae1c0`) and **deactivates**
+(+0x224=0) once the expanding radius passes +0x220 and count +0x234 hits 0 — i.e. a shell that sweeps
+outward once, not a persistent field.
+
+**Apply = FUN_140ab9cf0(this, dt)** (proven). Center = object translation (+0x134/138/13c); effective
+radius `R = max(+0x218, physicsQueryRadius)`; cull at `R²`. For each candidate body at distance `d`:
+
+```
+nd      = clamp(d / R, 0, 1)
+impulse = (1 - nd)^2                 // QUADRATIC falloff
+        * magMax(+0x214 = 100.0)     // primary impulse scale
+        * dirFactor                  // |magVec|^2 - (magVec·n)^2, clamped >=0
+        * surfFactor                 // material/curve sample, clamped <= R^2
+        * bodyFactor(~1.0) * DAT_141ca6f44 /*global*/ * dt
+finalMag = min(impulse, invInertia(body) * max(+0x210 = 100.0, dirFactor))   // per-body velocity-change cap
+dir      = normalize(center->body), rotated by object matrix, then JITTERED by +0x238/+0x23c
+           via the MSVC-LCG RNG DAT_142c73a98 (seed*0x343fd+0x269ec3)  // same LCG family as weapon spread
+impulseVec = dir * finalMag  ->  FUN_140a61ca0(body, impulseVec)
+```
+
+**Impulse sinks** (proven, both unique to FUN_140ab9cf0): `FUN_140a61ca0` = rigid-body sink — packs
+{body handle, vec3} into a command struct and **enqueues a deferred physics command** (FUN_140a6d700 →
+FUN_140099320), because Havok steps multithreaded. `FUN_140a622c0` = the **character/ragdoll** path,
+carrying extra knockback payload (`FUN_14971e490`). Siblings `CForceField` (size 0x760, an oriented AABB
+volume + reserved list) and `CForcePoint` (size 0x990, self-registers into global registry `DAT_142cb4b30`,
+polarity float `-1.0` at +0x926 = attract/repel) use *different, unlocated* apply paths — their
+ctor↔class binding is **inferred** (factory descriptor vtables `PTR_LAB_141d9b610/638/5e8` are data-section,
+not in the dump).
+
 ## Notable constants / tunables
 
 | Value (hex) | Decoded | Where | Meaning (grade) |
 |---|---|---|---|
 | `5000`, `10000` | ints | FUN_14009e600 (`local_40`,`local_3c`) | world-init reserve sizes passed to FUN_141670d10 (inferred) |
-| `0x42c80000` | `100.0f` | FUN_140a754d0 +0x42 / +0x214 | CForcePulse default radius or strength (inferred) |
-| `0x3dcccccd` | `0.1f` | FUN_140a754d0 +0x47 | CForcePulse default falloff/scale (inferred) |
-| `0x41a00000` | `20.0f` | FUN_140a754d0 +0x48 | CForcePulse default (inferred) |
-| `0x3f800000` | `1.0f` | FUN_140a754d0 +0x244 | CForcePulse default multiplier=1.0 (inferred) |
+| `0x42c80000` | `100.0f` | FUN_140a754d0 +0x210 / +0x214 | CForcePulse magnitude **min / max** — the primary impulse scale (proven, §apply) |
+| `0x3dcccccd` | `0.1f` | FUN_140a754d0 +0x238 / +0x23c | CForcePulse **direction jitter** base / scale (proven, §apply) |
+| `0x41a00000` | `20.0f` | FUN_140a754d0 +0x240 | CForcePulse curve/tick-setup param — not in core apply (inferred) |
+| `0x3f800000` | `1.0f` | FUN_140a754d0 +0x244 | CForcePulse falloff/shape param → curve setup (inferred) |
+| curves | 8-pt @+0x300, ramp @+0x340 | FUN_14763a4f0 / FUN_140a749a0 | falloff curve objects; `surfFactor` term is the likely consumer (proven built; sample site inferred) |
 | `0xdeadbeef` | sentinel | FUN_140a754d0 +0x2cc | uninitialized-id marker (proven idiom) |
 | `10000`, `4000`, `1000` | element reserves | FUN_14168a050 | instanced-debris pool ceilings, strides 8 / 0x10 / 4/0xc (proven) |
 | `0x8000` | 32768 | FUN_141670d10 (FUN_141138ec0) | world command-buffer capacity (inferred) |
@@ -226,9 +264,14 @@ appears throughout these ctors. (proven idiom, seen in every ctor above)
 
 ## Open questions / lower-confidence
 
-- Exact semantics of the `CForcePulse` floats (100.0 / 0.1 / 20.0) — radius vs. strength vs. duration —
-  is inferred from position, not proven; confirm by reading the RTPC property table that overrides them
-  (the component is data-driven, so retail `.epe` values likely differ from these defaults).
+- ~~Exact semantics of the `CForcePulse` floats~~ — **RESOLVED** (see "CForcePulse — force-application
+  math" above): +0x210/+0x214 = magnitude min/max (100.0), +0x238/+0x23c = direction jitter (0.1). Retail
+  `.epe` RTPC values still override these defaults, so per-object magnitudes differ.
+- `CForceField` / `CForcePoint` per-frame apply functions are **not located** (they don't reuse the Pulse
+  sinks); their ctor↔class binding is inferred via factory vtables `PTR_LAB_141d9b610/638/5e8` which live in
+  the data section, absent from this dump — route: read those vtable slots in the loaded binary.
+- `DAT_141ca6f44` (global impulse scalar in the apply expression) and +0x240 (20.0) values are unresolved
+  from the text dump. (inferred / speculative)
 - The debris despawn timer value lives in per-instance `hkndBodyTimeoutRuntime` data (0xc-stride array),
   not as a decomp literal — needs a live-data / tagfile read to pin down. (see `[[havok-hct-2018]]`)
 - `DAT_141ca6cac` is a heavily-shared engine float (7614 refs); its use here as an explosion scalar is
