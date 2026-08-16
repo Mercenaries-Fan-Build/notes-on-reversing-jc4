@@ -123,6 +123,45 @@ pub fn best_inline_mip(b: &[u8]) -> Result<Mip, String> {
     Ok(Mip { width: w, height: ht, dxgi_format: h.dxgi_format, data: b[HEADER_LEN..HEADER_LEN + size].to_vec() })
 }
 
+/// Decode a mip surface to tightly-packed RGBA8 (`width*height*4` bytes) for display. Block formats go
+/// through `texture2ddecoder`; the two uncompressed formats are copied/swizzled. `texture2ddecoder`
+/// emits `0xAARRGGBB` u32s (channel order locked by the `bc1_red` test). Returns Err for formats we
+/// don't rasterize yet (the float HDR formats).
+pub fn decode_rgba(m: &Mip) -> Result<Vec<u8>, String> {
+    let (w, h) = (m.width as usize, m.height as usize);
+    let n = w * h;
+    let mut img = vec![0u32; n];
+    type Dec = fn(&[u8], usize, usize, &mut [u32]) -> Result<(), &'static str>;
+    let run = |f: Dec, img: &mut [u32]| f(&m.data, w, h, img).map_err(|e| e.to_string());
+    match m.dxgi_format {
+        71 => run(texture2ddecoder::decode_bc1, &mut img)?,
+        74 => run(texture2ddecoder::decode_bc2, &mut img)?,
+        77 => run(texture2ddecoder::decode_bc3, &mut img)?,
+        80 => run(texture2ddecoder::decode_bc4, &mut img)?,
+        83 => run(texture2ddecoder::decode_bc5, &mut img)?,
+        98 => run(texture2ddecoder::decode_bc7, &mut img)?,
+        28 => { // R8G8B8A8_UNORM — already RGBA8
+            if m.data.len() < n * 4 { return Err("truncated R8G8B8A8 surface".into()); }
+            return Ok(m.data[..n * 4].to_vec());
+        }
+        87 => { // B8G8R8A8_UNORM — swizzle B<->R
+            if m.data.len() < n * 4 { return Err("truncated B8G8R8A8 surface".into()); }
+            let mut out = m.data[..n * 4].to_vec();
+            for px in out.chunks_exact_mut(4) { px.swap(0, 2); }
+            return Ok(out);
+        }
+        f => return Err(format!("dxgi {f} ({}) not rasterized yet", dxgi_name(f))),
+    }
+    let mut out = Vec::with_capacity(n * 4);
+    for &p in &img {
+        out.push((p >> 16) as u8); // R
+        out.push((p >> 8) as u8);  // G
+        out.push(p as u8);         // B
+        out.push((p >> 24) as u8); // A
+    }
+    Ok(out)
+}
+
 /// Wrap a mip in a DDS container (DX10 extended header, carries the DXGI format verbatim) so it opens
 /// in any DDS viewer / community tool.
 pub fn to_dds(m: &Mip) -> Vec<u8> {
@@ -186,5 +225,16 @@ mod tests {
     fn block_math() {
         assert_eq!(mip_size(4, 4, 71), Some(8));      // BC1 4x4
         assert_eq!(mip_size(128, 128, 77), Some(16384)); // BC3 128x128
+    }
+    #[test]
+    fn bc1_red() {
+        // BC1 block: color0 = RGB565 red (0xF800), color1 = 0, all indices 0 -> every texel = color0.
+        // Locks texture2ddecoder's channel order to our 0xAARRGGBB extraction (R high, G/B low, A=255).
+        let block = [0x00u8, 0xF8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        let m = Mip { width: 4, height: 4, dxgi_format: 71, data: block.to_vec() };
+        let rgba = decode_rgba(&m).unwrap();
+        assert_eq!(rgba.len(), 4 * 4 * 4);
+        let (r, g, b, a) = (rgba[0], rgba[1], rgba[2], rgba[3]);
+        assert!(r > 240 && g < 16 && b < 16 && a == 255, "expected opaque red, got ({r},{g},{b},{a})");
     }
 }
