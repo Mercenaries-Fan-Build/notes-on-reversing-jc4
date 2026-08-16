@@ -10,4 +10,8 @@ path = "src/main.rs"
 
 [dependencies]
 jc4_formats = { path = "../jc4_formats" }
-rayon = "1"     # data-parallel candidate hashing across cores
+rayon = "1"        # data-parallel candidate hashing across cores
+# GPU combinator: on-device candidate generation + lookup3 + binary-search match against target hashes.
+wgpu = "22"
+pollster = "0.3"   # block_on for the headless compute device
+bytemuck = { version = "1", features = ["derive"] }
