@@ -1,0 +1,13 @@
+[package]
+name = "jc4_probe"
+version = "0.1.0"
+edition = "2021"
+description = "JC4 research sandbox — messy, fast-changing experimental logic (name-cracking, brute/heuristic probes) kept OUT of the clean, possibly-public crates (jc4_formats/jc4_arc). Nothing here is API-stable."
+
+[[bin]]
+name = "jc4_probe"
+path = "src/main.rs"
+
+[dependencies]
+jc4_formats = { path = "../jc4_formats" }
+rayon = "1"     # data-parallel candidate hashing across cores
