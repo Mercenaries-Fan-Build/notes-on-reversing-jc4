@@ -125,14 +125,25 @@ struct Config { game_dir: String, oodle_dll: String, filelist: String }
 
 /// A curated navigator shortcut (see data/highlights.txt) — jumps to a notable unit across archives.
 struct Highlight { tag: String, label: String, archive: String, path: String }
-fn load_highlights() -> Vec<Highlight> {
-    include_str!("../data/highlights.txt").lines().filter_map(|l| {
+fn parse_highlights(text: &str) -> Vec<Highlight> {
+    text.lines().filter_map(|l| {
         let l = l.trim();
         if l.is_empty() || l.starts_with('#') { return None; }
         let f: Vec<&str> = l.split('|').map(|s| s.trim()).collect();
         if f.len() < 4 { return None; }
         Some(Highlight { tag: f[0].to_string(), label: f[1].to_string(), archive: f[2].to_string(), path: f[3].to_string() })
     }).collect()
+}
+/// Bundled curated seed + the auto-discovered runtime list (`<config dir>/highlights.txt`, written by
+/// `jc4_arc discover`). Curated entries win on duplicate paths.
+fn load_highlights() -> Vec<Highlight> {
+    let mut v = parse_highlights(include_str!("../data/highlights.txt"));
+    if let Some(dir) = config_path().parent() {
+        if let Ok(s) = std::fs::read_to_string(dir.join("highlights.txt")) { v.extend(parse_highlights(&s)); }
+    }
+    let mut seen = std::collections::HashSet::new();
+    v.retain(|h| seen.insert(h.path.clone()));
+    v
 }
 fn tag_color(tag: &str) -> Color32 {
     match tag { "MODEL" => ACC, "TEX" => VOLT, "STRUCT" => VOLT, "UI" => INFO, _ => DIM }
@@ -596,27 +607,35 @@ impl Workshop {
                             }
                         });
                 }
-                // curated highlights — jump straight to notable units, across archives
-                if !self.highlights.is_empty() {
-                    ui.add_space(8.0);
-                    egui::CollapsingHeader::new(RichText::new("★ HIGHLIGHTS").color(VOLT).size(11.0).strong())
-                        .default_open(true).show(ui, |ui| {
-                            for hl in &self.highlights {
-                                let resp = ui.horizontal(|ui| {
-                                    ui.label(RichText::new(&hl.tag).color(tag_color(&hl.tag)).size(8.0).strong());
-                                    ui.add(egui::Label::new(RichText::new(&hl.label).size(11.0).color(TX)).truncate());
-                                }).response;
-                                if ui.interact(resp.rect, egui::Id::new(("hl", &hl.path)), egui::Sense::click()).clicked() {
-                                    jump = Some((hl.archive.clone(), hl.path.clone()));
-                                }
-                            }
-                        });
-                }
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("filter").color(FAINT).size(10.0));
                     ui.add(egui::TextEdit::singleline(&mut self.filter).desired_width(f32::INFINITY).hint_text("name or hash"));
                 });
+                // curated + auto-discovered model units — filtered, scrollable, jump on click
+                if !self.highlights.is_empty() {
+                    let f = self.filter.to_lowercase();
+                    let hv: Vec<usize> = self.highlights.iter().enumerate()
+                        .filter(|(_, h)| f.is_empty() || h.label.to_lowercase().contains(&f) || h.path.to_lowercase().contains(&f))
+                        .map(|(i, _)| i).collect();
+                    ui.add_space(6.0);
+                    egui::CollapsingHeader::new(RichText::new(format!("★ HIGHLIGHTS · {}", hv.len())).color(VOLT).size(11.0).strong())
+                        .default_open(true).show(ui, |ui| {
+                            egui::ScrollArea::vertical().id_salt("hl_scroll").max_height(196.0).auto_shrink([false, false])
+                                .show_rows(ui, 19.0, hv.len(), |ui, range| {
+                                    for row in range {
+                                        let hl = &self.highlights[hv[row]];
+                                        let resp = ui.horizontal(|ui| {
+                                            ui.label(RichText::new(&hl.tag).color(tag_color(&hl.tag)).size(8.0).strong());
+                                            ui.add(egui::Label::new(RichText::new(&hl.label).size(10.5).color(TX)).truncate());
+                                        }).response;
+                                        if ui.interact(resp.rect, egui::Id::new(("hl", hv[row])), egui::Sense::click()).clicked() {
+                                            jump = Some((hl.archive.clone(), hl.path.clone()));
+                                        }
+                                    }
+                                });
+                        });
+                }
                 ui.add_space(6.0);
                 let mut pick = None;
                 match &self.archive {
