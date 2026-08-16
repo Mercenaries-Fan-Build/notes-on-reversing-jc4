@@ -279,7 +279,7 @@ pub struct SubTex { pub dif: Option<usize>, pub nrm: Option<usize>, pub mpm: Opt
 /// interpolated smooth normals, albedo from `_dif`, metalness+roughness from `_mpm` (→ metal kills diffuse
 /// and tints the specular; dielectric gets a small white spec), Blinn-Phong specular, ambient + a faint
 /// metal env term. `nrm` maps not yet applied (needs tangents). Untextured falls back to the `base` tint.
-pub fn rasterize_rgba(m: &Mesh, w: usize, h: usize, yaw: f32, pitch: f32, base: [u8; 3], pool: &[Texture], sub_tex: &[SubTex]) -> Vec<u8> {
+pub fn rasterize_rgba(m: &Mesh, w: usize, h: usize, yaw: f32, pitch: f32, base: [u8; 3], paint: [f32; 3], pool: &[Texture], sub_tex: &[SubTex]) -> Vec<u8> {
     let mut color = vec![0u8; w * h * 4];
     let mut zbuf = vec![f32::NEG_INFINITY; w * h];
     let (cy, sy, cp, sp) = (yaw.cos(), yaw.sin(), pitch.cos(), pitch.sin());
@@ -329,12 +329,15 @@ pub fn rasterize_rgba(m: &Mesh, w: usize, h: usize, yaw: f32, pitch: f32, base: 
                 if depth <= zbuf[i] { continue; }
                 let (uu, vv) = (w0 * ua[0] + w1 * ub[0] + w2 * uc[0], w0 * ua[1] + w1 * ub[1] + w2 * uc[1]);
                 // albedo
-                let alb = match dif {
+                let alb0 = match dif {
                     Some(tx) => { let s = tx.sample(uu, vv); if s[3] < 96 { continue; } [s[0] as f32 / 255.0, s[1] as f32 / 255.0, s[2] as f32 / 255.0] }
                     None => [base[0] as f32 / 255.0, base[1] as f32 / 255.0, base[2] as f32 / 255.0],
                 };
                 // metalness / roughness from _mpm (R=metal, G=rough) — defaults: metallic body
                 let (metal, rough) = match mpm { Some(tx) => { let s = tx.sample(uu, vv); (s[0] as f32 / 255.0, (s[1] as f32 / 255.0).max(0.08)) } None => (0.85, 0.4) };
+                // paint tint: modulate the base color by the chosen paint, scaled by metalness so the
+                // painted metal body takes the colour while rubber/glass (non-metal) stay mostly neutral
+                let alb = [0, 1, 2].map(|ch| alb0[ch] * (paint[ch] * metal + (1.0 - metal)));
                 let n = norm([w0 * na[0] + w1 * nb[0] + w2 * nc[0], w0 * na[1] + w1 * nb[1] + w2 * nc[1], w0 * na[2] + w1 * nb[2] + w2 * nc[2]]);
                 let ndl = dot(n, light).max(0.0);
                 let ndh = dot(n, half).max(0.0);
@@ -369,10 +372,10 @@ pub fn to_png_rgba(w: usize, h: usize, rgba: &[u8]) -> Vec<u8> {
 }
 
 /// Render oracle: rasterize and composite over a dark ground → RGB PNG (`jc4_arc mesh/model --png`).
-pub fn render_png(m: &Mesh, size: usize, yaw: f32, pitch: f32) -> Vec<u8> { render_png_tex(m, size, yaw, pitch, &[], &[]) }
-pub fn render_png_tex(m: &Mesh, size: usize, yaw: f32, pitch: f32, pool: &[Texture], sub_tex: &[SubTex]) -> Vec<u8> {
+pub fn render_png(m: &Mesh, size: usize, yaw: f32, pitch: f32) -> Vec<u8> { render_png_tex(m, size, yaw, pitch, [1.0; 3], &[], &[]) }
+pub fn render_png_tex(m: &Mesh, size: usize, yaw: f32, pitch: f32, paint: [f32; 3], pool: &[Texture], sub_tex: &[SubTex]) -> Vec<u8> {
     let (w, h) = (size, size);
-    let rgba = rasterize_rgba(m, w, h, yaw, pitch, [200, 200, 205], pool, sub_tex);
+    let rgba = rasterize_rgba(m, w, h, yaw, pitch, [200, 200, 205], paint, pool, sub_tex);
     let bg = [16u8, 22, 28];
     let mut rgb = vec![0u8; w * h * 3];
     for (o, px) in rgba.chunks_exact(4).enumerate() {
