@@ -242,9 +242,19 @@ pub fn render_png(m: &Mesh, size: usize, yaw: f32, pitch: f32) -> Vec<u8> {
     png(w, h, &rgb)
 }
 
-/// Decode and MERGE every mesh part in a model SARC (`.ee`) into one Mesh — each `.meshc` paired with
-/// its `.hrmeshc` for high LOD. NOTE: parts are merged in whatever space their own bbox implies; if the
-/// result looks jumbled, parts are in per-part local space and need the entity (.epe RTPC) transforms.
+/// Destruction/variant parts that should NOT render on the intact model (debris fragments, destroyed and
+/// broken states). Gated out of `decode_model`. Mesh-swap (`mshswap`) alternates are kept — they overlap
+/// the base in place, so they're harmless (a later refinement could pick one skin).
+fn is_render_part(base: &str) -> bool {
+    let b = base.to_ascii_lowercase();
+    !(b.contains("_debris") || b.contains("_dst") || b.contains("_destroyed") || b.contains("_broken") || b.contains("_wreck"))
+}
+
+/// Decode and MERGE the renderable mesh parts of a model SARC (`.ee`) into one Mesh — each `.meshc`
+/// paired with its `.hrmeshc` for high LOD, destruction/debris parts gated out. NOTE: parts are merged in
+/// whatever space their own bbox implies. This is correct for a model's own parts (shared object space),
+/// but ATTACHED sub-entities (e.g. a payload) carry a transform in the entity `.epe` RTPC we don't apply
+/// yet — so such attachments render at the origin instead of their spawned offset.
 pub fn decode_model(sarc_bytes: &[u8]) -> Result<Mesh, String> {
     let members = crate::sarc::parse(sarc_bytes)?;
     let hr: std::collections::HashMap<&str, &[u8]> = members.iter()
@@ -255,6 +265,7 @@ pub fn decode_model(sarc_bytes: &[u8]) -> Result<Mesh, String> {
     let mut parts = 0;
     for m in &members {
         if !(m.stored && m.name.ends_with(".meshc")) { continue; }
+        if !is_render_part(m.name.trim_end_matches(".meshc").rsplit('/').next().unwrap_or("")) { continue; }
         let d = match m.data(sarc_bytes) { Some(d) => d, None => continue };
         let mesh = match hr.get(m.name.trim_end_matches(".meshc")) {
             Some(h) => decode_mesh_hr(d, h), None => decode_mesh(d),
