@@ -428,9 +428,14 @@ fn main() {
             cmd_extract(&a[2], &a[3], &a[4], limit, &oodle_dll_from_env(), fl.as_ref(), msub.as_deref());
         }
         "mesh" => {
-            if a.len() < 3 { eprintln!("usage: jc4_arc mesh <meshc> [out.obj]"); return; }
+            if a.len() < 3 { eprintln!("usage: jc4_arc mesh <meshc> [out.obj] [--hr <hrmeshc>]"); return; }
             let b = std::fs::read(&a[2]).unwrap();
-            match jc4_formats::amf::decode_mesh(&b) {
+            let hr = a.iter().position(|s| s == "--hr").and_then(|i| a.get(i + 1)).map(|p| std::fs::read(p).unwrap());
+            let decoded = match &hr {
+                Some(h) => jc4_formats::amf::decode_mesh_hr(&b, h),
+                None => jc4_formats::amf::decode_mesh(&b),
+            };
+            match decoded {
                 Ok(m) => {
                     println!("mesh: {} verts, {} tris  bbox min {:?} max {:?}  (positions within bbox: OK)",
                         m.positions.len(), m.indices.len() / 3, m.bbox_min, m.bbox_max);
