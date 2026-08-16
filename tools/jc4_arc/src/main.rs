@@ -458,7 +458,8 @@ fn main() {
         "model" => {
             if let Some(png) = a.iter().position(|s| s == "--png").and_then(|i| a.get(i + 1)) {
                 let b = std::fs::read(&a[2]).unwrap();
-                match jc4_formats::amf::decode_model(&b) {
+                let epe = a.iter().position(|s| s == "--epe").and_then(|i| a.get(i + 1)).map(|p| std::fs::read(p).unwrap());
+                match jc4_formats::amf::decode_model_asm(&b, epe.as_deref()) {
                     Ok(m) => {
                         let yaw = a.iter().position(|s| s == "--yaw").and_then(|i| a.get(i + 1)).and_then(|s| s.parse().ok()).unwrap_or(0.7);
                         let pitch = a.iter().position(|s| s == "--pitch").and_then(|i| a.get(i + 1)).and_then(|s| s.parse().ok()).unwrap_or(0.3);
