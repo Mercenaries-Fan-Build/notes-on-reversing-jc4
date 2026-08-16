@@ -332,12 +332,17 @@ impl Workshop {
     }
 
     /// Re-assemble the model mesh for the current layer selection (invalidates the cached render).
+    /// Nothing selected → nothing renders. The fallback (when the blueprint matches no parts) still
+    /// honours the selection, so it can never collapse back to "render everything".
     fn reassemble(&mut self) {
-        let m = match &self.model_src {
-            Some((sarc, epe)) => amf::decode_model_asm(sarc, epe.as_deref(), self.part_sel).or_else(|_| amf::decode_model(sarc)),
+        let s = self.part_sel;
+        let any = s.render || s.other || s.debris;
+        self.mesh = match &self.model_src {
+            Some((sarc, epe)) if any => amf::decode_model_asm(sarc, epe.as_deref(), s).ok()
+                .or_else(|| amf::decode_model_asm(sarc, None, s).ok()),
+            Some(_) => None, // no layer selected
             None => return,
         };
-        self.mesh = m.ok();
         self.model_tex = None;
     }
 
@@ -800,9 +805,9 @@ impl Workshop {
 
         // viewport
         egui::CentralPanel::default().frame(egui::Frame::none().fill(G0)).show(ctx, |ui| {
-            // key off a decoded mesh, not the path-derived Kind: model geometry rides inside `.ee`
-            // (Entity) and SARC entries, so sel_kind is rarely Model even when a mesh is present.
-            if self.mesh.is_some() {
+            // route to the model viewport whenever a model is loaded (even if the current layer
+            // selection is empty → it draws an empty frame rather than falling back to the stub).
+            if self.model_src.is_some() {
                 self.model_viewport(ui);
             } else {
                 let dims = match &self.preview {
