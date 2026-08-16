@@ -308,6 +308,49 @@ fn harvest_paths(data: &[u8], out: &mut std::collections::BTreeSet<String>) {
 }
 
 /// Walk `<game_dir>/archives_win64` for `.tab`/`.arc` pairs (recursively).
+// Auto-discover renderable model units: for every entry that resolves to a `.ee` entity, decode it and
+// check its SARC for `.modelc` parts. Emits highlights-format lines (`MODEL | label | archive | path`)
+// so the workshop's HIGHLIGHTS panel can populate itself — no hand-curation.
+fn cmd_discover(game_dir: &str, out_path: &str, filelist: &str, only: Option<&str>) {
+    let names = load_filelist_map(filelist);
+    let dll = oodle_dll_from_env();
+    let root = std::path::Path::new(game_dir).join("archives_win64");
+    let mut out: Vec<(String, String, String, usize)> = Vec::new(); // (arc_label, label, path, parts)
+    let mut scanned = 0u32;
+    for tab_path in discover_tabs(game_dir) {
+        let arc_label = tab_path.strip_prefix(&root).ok()
+            .and_then(|r| r.with_extension("").to_str().map(|s| s.replace('\\', "/")))
+            .unwrap_or_default();
+        let b = match std::fs::read(&tab_path) { Ok(b) => b, Err(_) => continue };
+        let t = match parse_tab(&b) { Ok(t) => t, Err(_) => continue };
+        let arc_path = tab_path.with_extension("arc");
+        let mut arc = match File::open(&arc_path) { Ok(f) => f, Err(_) => continue };
+        let mut oodle: Option<Oodle> = None;
+        for e in &t.entries {
+            let path = match names.get(&e.name_hash) { Some(p) if p.ends_with(".ee") => p, _ => continue };
+            if let Some(s) = only { if !path.contains(s) { continue; } }
+            let data = match decode_entry(&mut arc, &t, e, &dll, &mut oodle) { Ok(d) => d, Err(_) => continue };
+            if magic_ext(&data) != "sarc" { continue; }
+            let members = match jc4_formats::sarc::parse(&data) { Ok(m) => m, Err(_) => continue };
+            let parts = members.iter().filter(|m| m.stored && m.name.ends_with(".modelc")).count();
+            if parts == 0 { continue; }
+            let label = basename(path).trim_end_matches(".ee").to_string();
+            out.push((arc_label.clone(), label, path.clone(), parts));
+        }
+        scanned += 1;
+        eprintln!("[{scanned}] {arc_label}  ({} models so far)", out.len());
+    }
+    out.sort();
+    let mut s = String::from("# auto-discovered model units (jc4_arc discover). regenerate anytime.\n");
+    for (arc, label, path, parts) in &out {
+        s.push_str(&format!("MODEL | {label} ({parts}p) | {arc} | {path}\n"));
+    }
+    match std::fs::write(out_path, &s) {
+        Ok(_) => println!("discovered {} model units -> {out_path}", out.len()),
+        Err(x) => eprintln!("write {out_path}: {x}"),
+    }
+}
+
 fn discover_tabs(game_dir: &str) -> Vec<std::path::PathBuf> {
     let root = std::path::Path::new(game_dir).join("archives_win64");
     let mut out = Vec::new();
@@ -458,6 +501,12 @@ fn main() {
             let gibbed = a.iter().position(|s| s == "--gibbed").and_then(|i| a.get(i + 1)).map(|s| s.as_str());
             let only = a.iter().position(|s| s == "--only").and_then(|i| a.get(i + 1)).map(|s| s.as_str());
             cmd_dict(&a[2], &a[3], gibbed, only);
+        }
+        "discover" => {
+            if a.len() < 5 { eprintln!("usage: jc4_arc discover <game_dir> <out.txt> --filelist F [--only SUB]"); return; }
+            let fl = a.iter().position(|s| s == "--filelist").and_then(|i| a.get(i + 1));
+            let only = a.iter().position(|s| s == "--only").and_then(|i| a.get(i + 1)).map(|s| s.as_str());
+            match fl { Some(f) => cmd_discover(&a[2], &a[3], f, only), None => eprintln!("--filelist required") }
         }
         other => eprintln!("unknown command {other}"),
     }
