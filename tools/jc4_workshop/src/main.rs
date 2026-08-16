@@ -257,8 +257,8 @@ struct Workshop {
     model_src: Option<(Vec<u8>, Option<Vec<u8>>)>, // (sarc, epe) for re-assembly on layer toggle
     part_sel: amf::PartSel,                    // which model layers to render
     part_counts: (usize, usize, usize),        // (render, payload, debris) part counts
-    model_tex_pool: Vec<amf::Texture>,         // deduped diffuse textures for the current model
-    model_sub_tex: Vec<Option<usize>>,         // per-submesh index into the pool
+    model_tex_pool: Vec<amf::Texture>,         // deduped CarPaint textures for the current model
+    model_sub_tex: Vec<amf::SubTex>,           // per-submesh dif/nrm/mpm indices into the pool
     model_textured: bool,                       // show textures vs flat shading
     highlights: Vec<Highlight>,                // curated + auto-discovered model units (global)
     model_groups: Vec<(&'static str, Vec<usize>)>, // highlights grouped by category (CATEGORY_ORDER)
@@ -350,29 +350,33 @@ impl Workshop {
         self.build_textures();
     }
 
-    /// Resolve each submesh's diffuse `.ddsc` (SARC-stored or fetched external) into a deduped texture pool.
+    /// Resolve each submesh's CarPaint textures (`_dif`/`_nrm`/`_mpm`) into a deduped pool + per-submesh indices.
     fn build_textures(&mut self) {
         self.model_tex_pool.clear();
         self.model_sub_tex.clear();
         let sarc = match &self.model_src { Some((s, _)) => s.clone(), None => return };
-        let paths: Vec<Option<String>> = match &self.mesh { Some(m) => m.submeshes.iter().map(|s| s.diffuse.clone()).collect(), None => return };
-        let mut idx_of: BTreeMap<String, Option<usize>> = BTreeMap::new();
-        let mut sub_tex = Vec::with_capacity(paths.len());
-        for p in paths {
-            let slot = match p {
-                Some(path) => match idx_of.get(&path) {
-                    Some(&s) => s,
-                    None => {
-                        let s = self.resolve_texture(&sarc, &path).map(|t| { self.model_tex_pool.push(t); self.model_tex_pool.len() - 1 });
-                        idx_of.insert(path, s);
-                        s
-                    }
-                },
-                None => None,
-            };
-            sub_tex.push(slot);
+        let subs: Vec<(Option<String>, Option<String>, Option<String>)> = match &self.mesh {
+            Some(m) => m.submeshes.iter().map(|s| (s.diffuse.clone(), s.normal.clone(), s.mpm.clone())).collect(),
+            None => return,
+        };
+        let mut cache: BTreeMap<String, Option<usize>> = BTreeMap::new();
+        let mut sub_tex = Vec::with_capacity(subs.len());
+        for (dif, nrm, mpm) in subs {
+            let d = self.resolve_cached(&sarc, &mut cache, &dif);
+            let n = self.resolve_cached(&sarc, &mut cache, &nrm);
+            let mp = self.resolve_cached(&sarc, &mut cache, &mpm);
+            sub_tex.push(amf::SubTex { dif: d, nrm: n, mpm: mp });
         }
         self.model_sub_tex = sub_tex;
+    }
+
+    /// Resolve a texture path into the pool, cached by path.
+    fn resolve_cached(&mut self, sarc: &[u8], cache: &mut BTreeMap<String, Option<usize>>, path: &Option<String>) -> Option<usize> {
+        let p = match path { Some(p) => p, None => return None };
+        if let Some(&s) = cache.get(p) { return s; }
+        let s = self.resolve_texture(sarc, p).map(|t| { self.model_tex_pool.push(t); self.model_tex_pool.len() - 1 });
+        cache.insert(p.clone(), s);
+        s
     }
 
     /// Fetch a resource's bytes — from a stored SARC member, else fetched from the current archive by hash.
@@ -888,7 +892,7 @@ impl Workshop {
         let want = (self.orbit.0, self.orbit.1, w, h);
         if self.model_tex.is_none() || self.model_render != want {
             if let Some(mesh) = self.mesh.as_ref() {
-                let (pool, sub): (&[amf::Texture], &[Option<usize>]) =
+                let (pool, sub): (&[amf::Texture], &[amf::SubTex]) =
                     if self.model_textured { (&self.model_tex_pool, &self.model_sub_tex) } else { (&[], &[]) };
                 // supersample 2x then box-downsample — dense meshes are ~1 tri/px and alias badly otherwise
                 let ss = 2;
