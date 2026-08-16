@@ -54,6 +54,26 @@ fn main() {
                 println!("wrote {out}");
             }
         }
+        "stats" => {
+            if a.len() < 3 { eprintln!("usage: jc4_tex stats <ddsc> [hmddsc]"); return; }
+            let ddsc = std::fs::read(&a[2]).unwrap();
+            let hm = a.get(3).map(|p| std::fs::read(p).unwrap());
+            match avtx::decode_rgba_from(&ddsc, hm.as_deref()) {
+                Ok((w, h, rgba)) => {
+                    let n = (w * h) as u64;
+                    let mut sum = [0u64; 4];
+                    let (mut mn, mut mx) = ([255u8; 4], [0u8; 4]);
+                    for px in rgba.chunks_exact(4) {
+                        for c in 0..4 { sum[c] += px[c] as u64; mn[c] = mn[c].min(px[c]); mx[c] = mx[c].max(px[c]); }
+                    }
+                    println!("{w}x{h}  per-channel mean/min/max:");
+                    for (i, ch) in ["R", "G", "B", "A"].iter().enumerate() {
+                        println!("  {ch}: mean {:3}  [{:3}..{:3}]", sum[i] / n, mn[i], mx[i]);
+                    }
+                }
+                Err(e) => eprintln!("{e}"),
+            }
+        }
         "png" => {
             if a.len() < 4 { eprintln!("usage: jc4_tex png <ddsc> <out.png> [hmddsc]"); return; }
             let ddsc = std::fs::read(&a[2]).unwrap();
