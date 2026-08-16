@@ -65,6 +65,7 @@ fn main() -> eframe::Result<()> {
     eframe::run_native("jc4_workshop", opts, Box::new(|cc| {
         install_theme(&cc.egui_ctx);
         let mut app = Workshop::default();
+        app.paint_color = [1.0; 3]; // bare paint (no tint) until the user picks a colour
         app.config = load_config();
         app.highlights = load_highlights();
         app.build_model_groups();
@@ -260,6 +261,7 @@ struct Workshop {
     model_tex_pool: Vec<amf::Texture>,         // deduped CarPaint textures for the current model
     model_sub_tex: Vec<amf::SubTex>,           // per-submesh dif/nrm/mpm indices into the pool
     model_textured: bool,                       // show textures vs flat shading
+    paint_color: [f32; 3],                      // CarPaint tint (1,1,1 = bare/untinted)
     highlights: Vec<Highlight>,                // curated + auto-discovered model units (global)
     model_groups: Vec<(&'static str, Vec<usize>)>, // highlights grouped by category (CATEGORY_ORDER)
     strip_kind: Kind,                          // active category-strip tab
@@ -897,7 +899,7 @@ impl Workshop {
                 // supersample 2x then box-downsample — dense meshes are ~1 tri/px and alias badly otherwise
                 let ss = 2;
                 let (rw, rh) = (w * ss, h * ss);
-                let hi = amf::rasterize_rgba(mesh, rw, rh, self.orbit.0, self.orbit.1, [ACC.r(), ACC.g(), ACC.b()], pool, sub);
+                let hi = amf::rasterize_rgba(mesh, rw, rh, self.orbit.0, self.orbit.1, [ACC.r(), ACC.g(), ACC.b()], self.paint_color, pool, sub);
                 let mut rgba = vec![0u8; w * h * 4];
                 for y in 0..h {
                     for x in 0..w {
@@ -938,15 +940,22 @@ impl Workshop {
             let mut changed = false;
             ui.label(RichText::new("LAYERS").color(DIM).size(9.0).strong());
             let mut textured = self.model_textured;
-            let mut tex_changed = false;
+            let (mut tex_changed, mut paint_changed) = (false, false);
+            let mut paint = self.paint_color;
             ui.horizontal_wrapped(|ui| {
                 changed |= ui.checkbox(&mut sel.render, format!("Vehicle · {r}")).changed();
                 if o > 0 { changed |= ui.checkbox(&mut sel.other, format!("Payload · {o}")).changed(); }
                 if d > 0 { changed |= ui.checkbox(&mut sel.debris, format!("Debris · {d}")).changed(); }
                 tex_changed = ui.checkbox(&mut textured, "Textured").changed();
             });
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("paint").color(DIM).size(10.0));
+                paint_changed = ui.color_edit_button_rgb(&mut paint).changed();
+                if ui.small_button("reset").clicked() { paint = [1.0; 3]; paint_changed = true; }
+            });
             if changed { self.part_sel = sel; self.reassemble(); }
             if tex_changed { self.model_textured = textured; self.model_tex = None; }
+            if paint_changed { self.paint_color = paint; self.model_tex = None; }
             ui.add_space(8.0);
         }
         match &self.preview {
