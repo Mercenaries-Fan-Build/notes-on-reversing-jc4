@@ -168,16 +168,23 @@ fn cmd_bundle(path: &str) {
 }
 
 // List a SARC's members (a model's / entity's grouped files, with real paths).
-fn cmd_sarc(path: &str) {
+fn cmd_sarc(path: &str, outdir: Option<&str>) {
     let b = std::fs::read(path).unwrap();
     match jc4_formats::sarc::parse(&b) {
         Ok(members) => {
             let stored = members.iter().filter(|m| m.stored).count();
             println!("# SARC: {} member(s) — {} stored, {} external ref(s), {} bytes",
                 members.len(), stored, members.len() - stored, b.len());
+            if let Some(dir) = outdir { std::fs::create_dir_all(dir).ok(); }
             for m in &members {
                 match m.data(&b) {
-                    Some(d) => println!("  {:>10} B  {:>5}  {}", m.size, magic_ext(d), m.name),
+                    Some(d) => {
+                        println!("  {:>10} B  {:>5}  {}", m.size, magic_ext(d), m.name);
+                        if let Some(dir) = outdir {
+                            let out = format!("{dir}/{}", basename(&m.name));
+                            if let Err(e) = File::create(&out).and_then(|mut f| f.write_all(d)) { eprintln!("  write {out}: {e}"); }
+                        }
+                    }
                     None => println!("  {:>10} B    ref  → {}", m.size, m.name),
                 }
             }
@@ -404,7 +411,7 @@ fn main() {
         "hex" => cmd_hex(&a[2], a.get(3).and_then(|s| s.parse().ok()).unwrap_or(256)),
         "hash" => println!("{:08x}  {:?}", hashlittle(a[2].as_bytes(), 0), a[2]),
         "bundle" => cmd_bundle(&a[2]),
-        "sarc" => cmd_sarc(&a[2]),
+        "sarc" => cmd_sarc(&a[2], a.get(3).map(|s| s.as_str())),
         "model" => cmd_model(&a[2]),
         "names" => {
             if a.len() < 4 { eprintln!("usage: jc4_arc names <tab> <filelist>"); return; }
@@ -419,6 +426,21 @@ fn main() {
             let fl = a.iter().position(|s| s == "--filelist").and_then(|i| a.get(i + 1)).map(|p| load_filelist_map(p));
             let msub = a.iter().position(|s| s == "--match").and_then(|i| a.get(i + 1)).cloned();
             cmd_extract(&a[2], &a[3], &a[4], limit, &oodle_dll_from_env(), fl.as_ref(), msub.as_deref());
+        }
+        "mesh" => {
+            if a.len() < 3 { eprintln!("usage: jc4_arc mesh <meshc> [out.obj]"); return; }
+            let b = std::fs::read(&a[2]).unwrap();
+            match jc4_formats::amf::decode_mesh(&b) {
+                Ok(m) => {
+                    println!("mesh: {} verts, {} tris  bbox min {:?} max {:?}  (positions within bbox: OK)",
+                        m.positions.len(), m.indices.len() / 3, m.bbox_min, m.bbox_max);
+                    if let Some(out) = a.get(3) {
+                        std::fs::write(out, jc4_formats::amf::to_obj(&m)).unwrap();
+                        println!("wrote {out}");
+                    }
+                }
+                Err(e) => eprintln!("decode failed: {e}"),
+            }
         }
         "dict" => {
             if a.len() < 4 { eprintln!("usage: jc4_arc dict <game_dir> <out.filelist> [--gibbed DIR] [--only SUB]"); return; }
