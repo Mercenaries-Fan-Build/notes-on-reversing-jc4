@@ -455,7 +455,20 @@ fn main() {
         "hash" => println!("{:08x}  {:?}", hashlittle(a[2].as_bytes(), 0), a[2]),
         "bundle" => cmd_bundle(&a[2]),
         "sarc" => cmd_sarc(&a[2], a.get(3).map(|s| s.as_str())),
-        "model" => cmd_model(&a[2]),
+        "model" => {
+            if let Some(png) = a.iter().position(|s| s == "--png").and_then(|i| a.get(i + 1)) {
+                let b = std::fs::read(&a[2]).unwrap();
+                match jc4_formats::amf::decode_model(&b) {
+                    Ok(m) => {
+                        let yaw = a.iter().position(|s| s == "--yaw").and_then(|i| a.get(i + 1)).and_then(|s| s.parse().ok()).unwrap_or(0.7);
+                        let pitch = a.iter().position(|s| s == "--pitch").and_then(|i| a.get(i + 1)).and_then(|s| s.parse().ok()).unwrap_or(0.3);
+                        std::fs::write(png, jc4_formats::amf::render_png(&m, 512, yaw, pitch)).unwrap();
+                        println!("merged model: {} verts, {} tris -> {png}", m.positions.len(), m.indices.len() / 3);
+                    }
+                    Err(e) => eprintln!("decode_model: {e}"),
+                }
+            } else { cmd_model(&a[2]); }
+        }
         "names" => {
             if a.len() < 4 { eprintln!("usage: jc4_arc names <tab> <filelist>"); return; }
             cmd_names(&a[2], &a[3]);
