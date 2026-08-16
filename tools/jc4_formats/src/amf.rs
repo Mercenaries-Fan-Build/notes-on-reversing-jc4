@@ -185,12 +185,11 @@ fn png(w: usize, h: usize, rgb: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Software-rasterize the mesh (orbit yaw/pitch, orthographic, flat shading, PER-PIXEL z-buffer) to a
-/// PNG. This is the render oracle: the depth test is exact (no painter's-algorithm ordering error).
-pub fn render_png(m: &Mesh, size: usize, yaw: f32, pitch: f32) -> Vec<u8> {
-    let (w, h) = (size, size);
-    let mut color = vec![0u8; w * h * 3];
-    for px in color.chunks_mut(3) { px.copy_from_slice(&[16, 22, 28]); }
+/// Software-rasterize the mesh (orbit yaw/pitch, orthographic, flat shading, PER-PIXEL z-buffer) to RGBA
+/// with a TRANSPARENT background (alpha 0), so it composites over any UI. Exact depth — no painter's-algo
+/// ordering error. `base` is the model's RGB tint. This is the workshop viewport's renderer.
+pub fn rasterize_rgba(m: &Mesh, w: usize, h: usize, yaw: f32, pitch: f32, base: [u8; 3]) -> Vec<u8> {
+    let mut color = vec![0u8; w * h * 4]; // transparent
     let mut zbuf = vec![f32::NEG_INFINITY; w * h];
     let (cy, sy, cp, sp) = (yaw.cos(), yaw.sin(), pitch.cos(), pitch.sin());
     let rot = |v: [f32; 3]| { let (x, z) = (v[0] * cy + v[2] * sy, -v[0] * sy + v[2] * cy); [x, v[1] * cp - z * sp, v[1] * sp + z * cp] };
@@ -209,7 +208,7 @@ pub fn render_png(m: &Mesh, size: usize, yaw: f32, pitch: f32) -> Vec<u8> {
                   [u[1] * ww[2] - u[2] * ww[1], u[2] * ww[0] - u[0] * ww[2], u[0] * ww[1] - u[1] * ww[0]] };
         let nl = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(1e-9);
         let sh = ((n[0] * light[0] + n[1] * light[1] + n[2] * light[2]) / nl).abs() * 0.8 + 0.2;
-        let col = [(255.0 * sh) as u8, (122.0 * sh) as u8, (51.0 * sh) as u8];
+        let col = [(base[0] as f32 * sh) as u8, (base[1] as f32 * sh) as u8, (base[2] as f32 * sh) as u8, 255];
         let area = edge(pa[0], pa[1], pb[0], pb[1], pc[0], pc[1]);
         if area.abs() < 1e-6 { continue; }
         let (minx, maxx) = (pa[0].min(pb[0]).min(pc[0]).floor().max(0.0) as usize, pa[0].max(pb[0]).max(pc[0]).ceil().min(w as f32 - 1.0) as usize);
@@ -223,11 +222,52 @@ pub fn render_png(m: &Mesh, size: usize, yaw: f32, pitch: f32) -> Vec<u8> {
                 if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 { continue; }
                 let depth = w0 * pa[2] + w1 * pb[2] + w2 * pc[2];
                 let i = py * w + px;
-                if depth > zbuf[i] { zbuf[i] = depth; color[i * 3..i * 3 + 3].copy_from_slice(&col); }
+                if depth > zbuf[i] { zbuf[i] = depth; color[i * 4..i * 4 + 4].copy_from_slice(&col); }
             }
         }
     }
-    png(w, h, &color)
+    color
+}
+
+/// Render oracle: rasterize and composite over a dark ground → RGB PNG (`jc4_arc mesh/model --png`).
+pub fn render_png(m: &Mesh, size: usize, yaw: f32, pitch: f32) -> Vec<u8> {
+    let (w, h) = (size, size);
+    let rgba = rasterize_rgba(m, w, h, yaw, pitch, [255, 122, 51]);
+    let bg = [16u8, 22, 28];
+    let mut rgb = vec![0u8; w * h * 3];
+    for (o, px) in rgba.chunks_exact(4).enumerate() {
+        let a = px[3] as u32;
+        for c in 0..3 { rgb[o * 3 + c] = ((px[c] as u32 * a + bg[c] as u32 * (255 - a)) / 255) as u8; }
+    }
+    png(w, h, &rgb)
+}
+
+/// Decode and MERGE every mesh part in a model SARC (`.ee`) into one Mesh — each `.meshc` paired with
+/// its `.hrmeshc` for high LOD. NOTE: parts are merged in whatever space their own bbox implies; if the
+/// result looks jumbled, parts are in per-part local space and need the entity (.epe RTPC) transforms.
+pub fn decode_model(sarc_bytes: &[u8]) -> Result<Mesh, String> {
+    let members = crate::sarc::parse(sarc_bytes)?;
+    let hr: std::collections::HashMap<&str, &[u8]> = members.iter()
+        .filter(|m| m.stored && m.name.ends_with(".hrmeshc"))
+        .filter_map(|m| m.data(sarc_bytes).map(|d| (m.name.trim_end_matches(".hrmeshc"), d)))
+        .collect();
+    let mut out = Mesh { positions: Vec::new(), indices: Vec::new(), bbox_min: [f32::MAX; 3], bbox_max: [f32::MIN; 3] };
+    let mut parts = 0;
+    for m in &members {
+        if !(m.stored && m.name.ends_with(".meshc")) { continue; }
+        let d = match m.data(sarc_bytes) { Some(d) => d, None => continue };
+        let mesh = match hr.get(m.name.trim_end_matches(".meshc")) {
+            Some(h) => decode_mesh_hr(d, h), None => decode_mesh(d),
+        };
+        let mesh = match mesh { Ok(x) => x, Err(_) => continue };
+        let base = out.positions.len() as u32;
+        out.positions.extend_from_slice(&mesh.positions);
+        out.indices.extend(mesh.indices.iter().map(|i| i + base));
+        for i in 0..3 { out.bbox_min[i] = out.bbox_min[i].min(mesh.bbox_min[i]); out.bbox_max[i] = out.bbox_max[i].max(mesh.bbox_max[i]); }
+        parts += 1;
+    }
+    if parts == 0 { return Err("no mesh parts in SARC".into()); }
+    Ok(out)
 }
 
 /// Wavefront OBJ (positions + triangles) for eyeballing the decode in any 3D viewer.
