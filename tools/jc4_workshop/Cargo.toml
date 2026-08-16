@@ -2,7 +2,7 @@
 name = "jc4_workshop"
 version = "0.1.0"
 edition = "2021"
-description = "JC4 asset workshop — wgpu+egui browser & inspector for archives, textures (AVTX) and data (ADF). Model/texture RENDER viewport is stubbed pending the render pass."
+description = "JC4 asset workshop (wgpu+eframe, 'storm-rig') — command bar · rail · navigator · viewport · inspector, with Inspect/Settings pages. Browses archives as composite UNITS (Models/Structures/Textures/Data) via jc4_formats. Render viewport stubbed."
 
 [[bin]]
 name = "jc4_workshop"
