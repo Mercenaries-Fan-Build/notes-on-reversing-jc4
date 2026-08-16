@@ -269,10 +269,19 @@ impl Workshop {
         self.mesh = None;
         if matches!(self.preview, Some(Preview::Model { .. })) {
             if let Ok(members) = sarc::parse(&data) {
+                // pair each .meshc with its sibling .hrmeshc (high-detail buffers) by base name
+                let hr: BTreeMap<&str, &[u8]> = members.iter()
+                    .filter(|m| m.stored && m.name.ends_with(".hrmeshc"))
+                    .filter_map(|m| m.data(&data).map(|d| (m.name.trim_end_matches(".hrmeshc"), d)))
+                    .collect();
                 for mem in &members {
                     if mem.stored && mem.name.ends_with(".meshc") {
                         if let Some(d) = mem.data(&data) {
-                            if let Ok(mesh) = amf::decode_mesh(d) {
+                            let decoded = match hr.get(mem.name.trim_end_matches(".meshc")) {
+                                Some(h) => amf::decode_mesh_hr(d, h),
+                                None => amf::decode_mesh(d),
+                            };
+                            if let Ok(mesh) = decoded {
                                 if self.mesh.as_ref().map_or(true, |b| mesh.positions.len() > b.positions.len()) { self.mesh = Some(mesh); }
                             }
                         }
