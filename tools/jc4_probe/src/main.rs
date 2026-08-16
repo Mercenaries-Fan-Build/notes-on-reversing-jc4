@@ -15,8 +15,8 @@ fn main() {
         eprintln!("        recover names via grammar/vocabulary generation + lookup3 match (feedback loop)");
         eprintln!("  jc4_probe verify <game_dir> <cracked.filelist>");
         eprintln!("        content oracle: decode each cracked entry, confirm magic matches ext (collision filter)");
-        eprintln!("  jc4_probe gpu    <game_dir> <dict.filelist> <out.filelist> --context CTX");
-        eprintln!("        GPU combinator: on-device generate CTX/<tok>_<tok>.<ext>, lookup3, match (no vocab cap)");
+        eprintln!("  jc4_probe gpu    <game_dir> <dict.filelist> <out.filelist> (--context CTX | --prefix P)");
+        eprintln!("        GPU combinator: on-device generate <dir>/<tok>_<tok>.<ext>, lookup3, match (--prefix loops deep dirs)");
         return;
     }
     match a[1].as_str() {
@@ -35,9 +35,13 @@ fn main() {
             verify::run(&a[2], &a[3]);
         }
         "gpu" => {
-            if a.len() < 6 { eprintln!("usage: jc4_probe gpu <game_dir> <dict.filelist> <out.filelist> --context CTX"); return; }
-            let ctx = a.iter().position(|s| s == "--context").and_then(|i| a.get(i + 1));
-            match ctx { Some(c) => gpu::run(&a[2], &a[3], &a[4], c), None => eprintln!("--context CTX required (e.g. models/environments)") }
+            if a.len() < 6 { eprintln!("usage: jc4_probe gpu <game_dir> <dict.filelist> <out.filelist> (--context CTX | --prefix P)"); return; }
+            let flag = |name: &str| a.iter().position(|s| s == name).and_then(|i| a.get(i + 1));
+            match (flag("--context"), flag("--prefix")) {
+                (Some(c), _) => gpu::run(&a[2], &a[3], &a[4], c, false),
+                (_, Some(p)) => gpu::run(&a[2], &a[3], &a[4], p, true),
+                _ => eprintln!("need --context CTX (flat) or --prefix P (per-dir, e.g. models)"),
+            }
         }
         other => eprintln!("unknown command {other}"),
     }
