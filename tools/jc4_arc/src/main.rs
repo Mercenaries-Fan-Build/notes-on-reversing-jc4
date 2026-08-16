@@ -308,6 +308,50 @@ fn harvest_paths(data: &[u8], out: &mut std::collections::BTreeSet<String>) {
 }
 
 /// Walk `<game_dir>/archives_win64` for `.tab`/`.arc` pairs (recursively).
+// Resolve each submesh's diffuse .ddsc → Texture: from a stored SARC member, else (with a game dir) by
+// scanning the archives for the path hash. Returns (pool, per-submesh index). CLI oracle for textured render.
+fn resolve_model_textures(sarc: &[u8], mesh: &jc4_formats::amf::Mesh, game_dir: Option<&str>, dll: &str)
+    -> (Vec<jc4_formats::amf::Texture>, Vec<Option<usize>>) {
+    use jc4_formats::{amf, avtx, sarc as sarclib};
+    let dec = |data: &[u8]| -> Option<amf::Texture> {
+        let mip = avtx::best_inline_mip(data).ok()?;
+        let rgba = avtx::decode_rgba(&mip).ok()?;
+        Some(amf::Texture { w: mip.width as usize, h: mip.height as usize, rgba })
+    };
+    let members = sarclib::parse(sarc).unwrap_or_default();
+    let mut want: Vec<String> = mesh.submeshes.iter().filter_map(|s| s.diffuse.clone()).collect();
+    want.sort(); want.dedup();
+    let mut pool = Vec::new();
+    let mut idx: HashMap<String, Option<usize>> = HashMap::new();
+    for p in &want {
+        let t = members.iter().find(|m| m.stored && &m.name == p).and_then(|m| m.data(sarc)).and_then(dec);
+        idx.insert(p.clone(), t.map(|t| { pool.push(t); pool.len() - 1 }));
+    }
+    if let Some(gd) = game_dir {
+        let need: HashMap<u32, String> = want.iter().filter(|p| idx[*p].is_none()).map(|p| (hashlittle(p.as_bytes(), 0), p.clone())).collect();
+        if !need.is_empty() {
+            for tab in discover_tabs(gd) {
+                let tb = match std::fs::read(&tab) { Ok(b) => b, Err(_) => continue };
+                let t = match parse_tab(&tb) { Ok(t) => t, Err(_) => continue };
+                if !t.entries.iter().any(|e| need.contains_key(&e.name_hash)) { continue; }
+                let mut f = match File::open(tab.with_extension("arc")) { Ok(f) => f, Err(_) => continue };
+                let mut oodle = None;
+                for e in &t.entries {
+                    if let Some(path) = need.get(&e.name_hash) {
+                        if idx[path].is_none() {
+                            if let Ok(d) = decode_entry(&mut f, &t, e, dll, &mut oodle) {
+                                if let Some(tx) = dec(&d) { idx.insert(path.clone(), Some(pool.len())); pool.push(tx); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let sub = mesh.submeshes.iter().map(|s| s.diffuse.as_ref().and_then(|p| idx.get(p).copied().flatten())).collect();
+    (pool, sub)
+}
+
 // Auto-discover renderable model units: for every entry that resolves to a `.ee` entity, decode it and
 // check its SARC for `.modelc` parts. Emits highlights-format lines (`MODEL | label | archive | path`)
 // so the workshop's HIGHLIGHTS panel can populate itself — no hand-curation.
@@ -463,8 +507,11 @@ fn main() {
                     Ok(m) => {
                         let yaw = a.iter().position(|s| s == "--yaw").and_then(|i| a.get(i + 1)).and_then(|s| s.parse().ok()).unwrap_or(0.7);
                         let pitch = a.iter().position(|s| s == "--pitch").and_then(|i| a.get(i + 1)).and_then(|s| s.parse().ok()).unwrap_or(0.3);
-                        std::fs::write(png, jc4_formats::amf::render_png(&m, 512, yaw, pitch)).unwrap();
-                        println!("merged model: {} verts, {} tris -> {png}", m.positions.len(), m.indices.len() / 3);
+                        let game = a.iter().position(|s| s == "--game").and_then(|i| a.get(i + 1)).map(|s| s.as_str());
+                        let (pool, sub) = resolve_model_textures(&b, &m, game, &oodle_dll_from_env());
+                        let ntex = pool.len();
+                        std::fs::write(png, jc4_formats::amf::render_png_tex(&m, 512, yaw, pitch, &pool, &sub)).unwrap();
+                        println!("merged model: {} verts, {} tris, {ntex} textures -> {png}", m.positions.len(), m.indices.len() / 3);
                     }
                     Err(e) => eprintln!("decode_model: {e}"),
                 }
