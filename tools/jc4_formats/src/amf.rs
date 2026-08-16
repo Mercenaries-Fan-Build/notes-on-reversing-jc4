@@ -151,6 +151,85 @@ fn decode_one_mesh(mesh: &Value, vb: &[Vec<u8>], ib: &[Vec<u8>]) -> Result<(Vec<
     Ok((positions, indices))
 }
 
+// ── headless z-buffered rasterizer (render oracle) ───────────────────────────────────────────────
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc = !0u32;
+    for &b in bytes {
+        crc ^= b as u32;
+        for _ in 0..8 { crc = if crc & 1 != 0 { (crc >> 1) ^ 0xEDB88320 } else { crc >> 1 }; }
+    }
+    !crc
+}
+/// Minimal RGB PNG (filter 0, zlib via flate2) so a render can be viewed directly.
+fn png(w: usize, h: usize, rgb: &[u8]) -> Vec<u8> {
+    use std::io::Write;
+    let mut raw = Vec::with_capacity(h * (1 + w * 3));
+    for y in 0..h { raw.push(0); raw.extend_from_slice(&rgb[y * w * 3..(y + 1) * w * 3]); }
+    let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+    z.write_all(&raw).unwrap();
+    let idat = z.finish().unwrap();
+    let mut out = vec![0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+    let mut chunk = |typ: &[u8; 4], data: &[u8]| {
+        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        let mut cd = typ.to_vec(); cd.extend_from_slice(data);
+        out.extend_from_slice(&cd);
+        out.extend_from_slice(&crc32(&cd).to_be_bytes());
+    };
+    let mut ihdr = Vec::new();
+    ihdr.extend_from_slice(&(w as u32).to_be_bytes());
+    ihdr.extend_from_slice(&(h as u32).to_be_bytes());
+    ihdr.extend_from_slice(&[8, 2, 0, 0, 0]); // 8-bit, RGB
+    chunk(b"IHDR", &ihdr);
+    chunk(b"IDAT", &idat);
+    chunk(b"IEND", &[]);
+    out
+}
+
+/// Software-rasterize the mesh (orbit yaw/pitch, orthographic, flat shading, PER-PIXEL z-buffer) to a
+/// PNG. This is the render oracle: the depth test is exact (no painter's-algorithm ordering error).
+pub fn render_png(m: &Mesh, size: usize, yaw: f32, pitch: f32) -> Vec<u8> {
+    let (w, h) = (size, size);
+    let mut color = vec![0u8; w * h * 3];
+    for px in color.chunks_mut(3) { px.copy_from_slice(&[16, 22, 28]); }
+    let mut zbuf = vec![f32::NEG_INFINITY; w * h];
+    let (cy, sy, cp, sp) = (yaw.cos(), yaw.sin(), pitch.cos(), pitch.sin());
+    let rot = |v: [f32; 3]| { let (x, z) = (v[0] * cy + v[2] * sy, -v[0] * sy + v[2] * cy); [x, v[1] * cp - z * sp, v[1] * sp + z * cp] };
+    let c = [0, 1, 2].map(|i| (m.bbox_min[i] + m.bbox_max[i]) * 0.5);
+    let radius = (0..3).map(|i| (m.bbox_max[i] - m.bbox_min[i]).abs()).fold(1e-6f32, f32::max) * 0.5;
+    let scale = w.min(h) as f32 / (2.0 * radius) * 0.8;
+    let proj: Vec<[f32; 3]> = m.positions.iter().map(|v| {
+        let r = rot([v[0] - c[0], v[1] - c[1], v[2] - c[2]]);
+        [w as f32 * 0.5 + r[0] * scale, h as f32 * 0.5 - r[1] * scale, r[2]]
+    }).collect();
+    let light = { let l = [0.35f32, 0.5, 0.79]; let n = (l[0] * l[0] + l[1] * l[1] + l[2] * l[2]).sqrt(); [l[0] / n, l[1] / n, l[2] / n] };
+    let edge = |ax: f32, ay: f32, bx: f32, by: f32, px: f32, py: f32| (bx - ax) * (py - ay) - (by - ay) * (px - ax);
+    for t in m.indices.chunks_exact(3) {
+        let (pa, pb, pc) = (proj[t[0] as usize], proj[t[1] as usize], proj[t[2] as usize]);
+        let n = { let u = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]]; let ww = [pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]];
+                  [u[1] * ww[2] - u[2] * ww[1], u[2] * ww[0] - u[0] * ww[2], u[0] * ww[1] - u[1] * ww[0]] };
+        let nl = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(1e-9);
+        let sh = ((n[0] * light[0] + n[1] * light[1] + n[2] * light[2]) / nl).abs() * 0.8 + 0.2;
+        let col = [(255.0 * sh) as u8, (122.0 * sh) as u8, (51.0 * sh) as u8];
+        let area = edge(pa[0], pa[1], pb[0], pb[1], pc[0], pc[1]);
+        if area.abs() < 1e-6 { continue; }
+        let (minx, maxx) = (pa[0].min(pb[0]).min(pc[0]).floor().max(0.0) as usize, pa[0].max(pb[0]).max(pc[0]).ceil().min(w as f32 - 1.0) as usize);
+        let (miny, maxy) = (pa[1].min(pb[1]).min(pc[1]).floor().max(0.0) as usize, pa[1].max(pb[1]).max(pc[1]).ceil().min(h as f32 - 1.0) as usize);
+        for py in miny..=maxy {
+            for px in minx..=maxx {
+                let (fx, fy) = (px as f32 + 0.5, py as f32 + 0.5);
+                let (w0, w1, w2) = (edge(pb[0], pb[1], pc[0], pc[1], fx, fy) / area,
+                                    edge(pc[0], pc[1], pa[0], pa[1], fx, fy) / area,
+                                    edge(pa[0], pa[1], pb[0], pb[1], fx, fy) / area);
+                if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 { continue; }
+                let depth = w0 * pa[2] + w1 * pb[2] + w2 * pc[2];
+                let i = py * w + px;
+                if depth > zbuf[i] { zbuf[i] = depth; color[i * 3..i * 3 + 3].copy_from_slice(&col); }
+            }
+        }
+    }
+    png(w, h, &color)
+}
+
 /// Wavefront OBJ (positions + triangles) for eyeballing the decode in any 3D viewer.
 pub fn to_obj(m: &Mesh) -> String {
     let mut s = String::with_capacity(m.positions.len() * 24 + m.indices.len() * 12);
