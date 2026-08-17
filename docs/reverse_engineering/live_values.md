@@ -79,9 +79,61 @@ So future reads don't mis-treat these as tunables:
 | `DAT_141c8f550`, `DAT_141c901e8`, `DAT_141d008e8`, `DAT_141d1c474`, `DAT_141ee61b4` | large/negative dwords | hash/mask constants (not floats) |
 | `DAT_141d919f0` | `f8cc8778…` | data/pointer (0x141d9… region = vtable/pointer `.data`, not tunables) |
 
+## 4. Live instance walk — the un-walling recipe (proven)
+
+Paused in-game, the manager/system singletons are live objects reachable from their `.data` holders. **The
+singleton walk is validated** — three managers deref to real module-range vtables/prototypes at offset 0:
+
+| Singleton holder | → live object | offset-0 prototype (module) | Manager |
+|---|---|---|---|
+| `DAT_142cb1068` | `0x0501…90d0` | `0x142abe130` | `CSoundSystem` |
+| `DAT_142cb7dc8` | `0x18de8c00` | `0x141ef4730` | `CUIManager` |
+| `DAT_142c84b98` | `0x0ef94c00` | `0x141cad488` | shared physics/destruction context |
+
+(`DAT_142c84708` event-mgr and `DAT_142cba830` input deref to objects whose offset-0 is data, not a
+prototype — non-polymorphic-at-0.)
+
+**The recipe that turns a walled virtual method into a decomp function:**
+`object → [obj+0] prototype → prototype slot (code ptr in .text) → the slot is an incremental-link thunk
+`jmp FUN_target` → look up FUN_target in the decomp`. (Apex prototypes are a *mix* of code-pointer method
+slots in `.text` `0x140……` and data/metadata pointers in `.data` `0x1426……`; only the code slots are
+methods.)
+
+## 5. First confirmed instance — `CHavokDestructionSystem` context (proven)
+
+`DAT_142c84b98 → 0x0ef94c00`. Its prototype `PTR_LAB_141cad488` is **installed by `FUN_14009e600`** (decomp
+line 18387) — the exact `CHavokDestructionSystem` ctor documented in `destruction.md`. **Identity proven.**
+
+**Live field layout — upgrades `destruction.md`'s inferred layout to proven:**
+| Offset | Live value | Meaning |
+|---|---|---|
+| `+0x18` | `0x0f3c6230` | `hkndWorld` wrapper (heap) |
+| `+0x20` | `0x0f3431e0` | graphics manager (heap) |
+| `+0x28` | `0x0f332a00` | graphics manager / decal (heap) |
+
+**Resolved virtual-method table** (prototype `0x141cad488`, code slots → thunk → decomp fn):
+| Slot | Thunk | → decomp function | In dump |
+|---|---|---|---|
+| 0 | `0x1400a4740` `jmp` | `FUN_14766a080` (sz 52) | ✅ |
+| 1 | `0x1400b5e10` `jmp` | `FUN_1476a4bb0` | Ghidra-missed (live-disasm only) |
+| 3 | `0x1400a5150` (direct) | `FUN_1400a5150` (sz 111) | ✅ |
+| 7 | `0x1400c1380` `jmp` | `FUN_1476c9e60` (sz 225) | ✅ |
+| 9 | `0x1400a51c0` (direct) | `FUN_1400a51c0` (sz 92) | ✅ |
+| 15 | `0x1411b6f20` `jmp` | `FUN_14b8eb830` | Ghidra-missed (live-disasm only) |
+
+Slots 4/5/10–13 = the shared pure-virtual/no-op stub `0x141afbf34`. This recipe generalizes to **every**
+manager/component — read its live prototype, follow the code-slot thunks, recover the method bodies.
+
+## 6. Other live-state reads
+
+- **Environment singleton** `DAT_142cada68 → 0x52e84c00`, `+0x1150 = 0` — the extreme-weather state enum
+  (wind dig: `{3=sandstorm,4=tropical,5=tornado,6=blizzard}`); `0` = none active, consistent with clear
+  weather while paused. (value proven; object identity inferred — offset-0 is data, not a confirmable
+  prototype, so treat the `+0x1150` role as inferred until cross-checked.)
+
 ## Method
 
-`x64dbg` MCP `MemoryRead`, read-only while paused (user drives execution; never resumed). Bulk `.rdata` block
+`x64dbg` MCP `MemoryRead` + `DisasmGetInstructionRange`, read-only while paused (user drives execution; never resumed). Bulk `.rdata` block
 reads decoded little-endian as f32/u32 and classified (float tunable / math-const / sentinel / string / hash).
 Candidate address list = every `DAT_141……` cited across the 34 docs (56 unique). The `DAT_142c……` range was
 excluded from the *tunable* sweep — it is runtime `.data` (lookup3 type-id tokens and singleton holders),

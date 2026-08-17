@@ -263,6 +263,11 @@ appears throughout these ctors. (proven idiom, seen in every ctor above)
   both also called from teardown FUN_14769ff10.
 - Singleton access: `DAT_142c84b98` (72 refs — the shared physics/destruction context, holds world at
   +0x18, gfx managers at +0x20/+0x28) and `DAT_142c84be0` (10 refs — set by the ctor).
+  **Live-confirmed (x64dbg, 2026-08-16):** `DAT_142c84b98 → 0x0ef94c00`; prototype `PTR_LAB_141cad488`
+  (installed by `FUN_14009e600` — identity proven); live fields `+0x18 = hkndWorld (0x0f3c6230)`,
+  `+0x20/+0x28 = gfx managers (0x0f3431e0 / 0x0f332a00)` — **layout upgraded inferred → proven.** The
+  context's virtual methods resolve through the prototype's code-slot thunks to `FUN_14766a080`,
+  `FUN_1400a5150`, `FUN_1476c9e60`, `FUN_1400a51c0`, … (see `live_values.md` §5).
 
 ## Open questions / lower-confidence
 
