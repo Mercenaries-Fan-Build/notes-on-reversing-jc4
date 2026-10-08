@@ -2,7 +2,7 @@
   "mcpServers": {
     "corpus": {
       "command": "node",
-      "args": ["../notes-on-the-released-game/tools/corpus_mcp/src/server.js"],
+      "args": ["tools/corpus_mcp/src/server.js"],
       "env": {
         "CORPUS_REPO_ROOT": "C:/Users/Shadow/Desktop/notes-on-reversing-jc4",
         "CORPUS_DB_PATH": "C:/Users/Shadow/Desktop/notes-on-reversing-jc4/storage/corpus_lancedb"

@@ -1,0 +1,22 @@
+==== FUN_00478000 @0x00478000 size=200 callers=[]
+void FUN_00478000(void)
+{
+  // top-level caller; only reachable as a root
+  FUN_00478120(1);
+  return;
+}
+====================
+==== FUN_00478120 @0x00478120 size=340 callers=[FUN_00478000]
+int FUN_00478120(int param)
+{
+  // decodes a wavelet skeletal-animation clip
+  int r = FUN_00478200(param);
+  DAT_00df6b88 = r;
+  return FUN_00478120(r);   // self-reference must NOT appear as a callee
+}
+====================
+==== FUN_00478200 @0x00478200 size=88 callers=[FUN_00478120]
+int FUN_00478200(int x)
+{
+  return x + 1;
+}
